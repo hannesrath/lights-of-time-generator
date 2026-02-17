@@ -35,12 +35,12 @@ st.markdown("""
 # --- SESSION STATE INITIALIZATION ---
 if 'history' not in st.session_state: st.session_state.history = []
 
-# --- CALLBACKS (The Error Fixes) ---
+# --- CALLBACKS (Fixed Logic) ---
 def callback_randomize():
     st.session_state['seed_val'] = random.randint(1, 999999)
     st.session_state['exposure'] = round(random.uniform(2.5, 4.5), 1)
     st.session_state['aberration'] = round(random.uniform(5.0, 15.0), 1)
-    st.toast("New light paths discovered! 🔦")
+    st.toast("Optics shifted! 🔦")
 
 def callback_restore(meta):
     st.session_state['render_mode_radio'] = meta["Mode"]
@@ -63,12 +63,10 @@ def get_path(complexity, seed, prog, b_idx):
     t = np.linspace(0, 1, 2000)
     x, y = np.zeros_like(t), np.zeros_like(t)
     
-    # Jaime Gorospe's paths are low-frequency 'Gestures'
     for i in range(1, complexity + 1):
         freq = rng.uniform(0.1, 0.5) * i
         amp = rng.uniform(0.7, 1.4) / (i**0.9)
         phase = rng.uniform(0, 2*np.pi) + (prog * 2 * np.pi)
-        
         drift = b_idx * 0.003
         x += amp * np.cos(freq * t * 2 * np.pi + phase + drift)
         y += amp * np.sin(freq * t * 1.8 * np.pi + phase * 0.4 + drift)
@@ -78,32 +76,37 @@ def render_pro_light(complexity, strands, seed, exposure, glow, aberration, weig
     w, h = 1080, 1080
     canvas = np.zeros((h, w, 3), dtype=np.float32)
     
-    # FIXED: Scale the white core correctly using NumPy arrays
-    white_core = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-    
     for s_idx in range(strands):
         x, y = get_path(complexity, seed, prog, s_idx)
+        
+        # Base spectral primaries
         colors = [np.array([1.0, 0.1, 0.05]), np.array([0.1, 1.0, 0.2]), np.array([0.05, 0.2, 1.0])]
         offsets = [aberration * -1.5, 0, aberration * 1.5]
         
         strand_energy = exposure * np.random.RandomState(seed + s_idx).uniform(0.4, 1.0)
         
-        for color, offset in zip(colors, offsets):
+        for color_arr, offset in zip(colors, offsets):
             pts = np.stack([x * 380 + (w/2) + offset, y * 380 + (h/2)], axis=1).astype(np.int32)
             
-            # Layer 1: Gaseous Atmospheric Glow
-            cv2.polylines(canvas, [pts], False, color * (strand_energy * 0.03), 
+            # Helper to convert numpy color math to a standard float tuple for OpenCV
+            def to_cv_color(arr, intensity):
+                scaled = arr * intensity
+                return (float(scaled[0]), float(scaled[1]), float(scaled[2]))
+
+            # Layer 1: Atmospheric Envelope
+            cv2.polylines(canvas, [pts], False, to_cv_color(color_arr, strand_energy * 0.03), 
                           thickness=int(weight * 25), lineType=cv2.LINE_AA)
             
             # Layer 2: Prismatic Diffused Light
-            cv2.polylines(canvas, [pts], False, color * (strand_energy * 0.2), 
+            cv2.polylines(canvas, [pts], False, to_cv_color(color_arr, strand_energy * 0.2), 
                           thickness=int(weight * 6), lineType=cv2.LINE_AA)
             
-            # Layer 3: Incandescent Filament (The "White-Hot" Core)
-            cv2.polylines(canvas, [pts], False, white_core * (strand_energy * 0.85), 
+            # Layer 3: Incandescent Filament (White-hot core)
+            # We add all channels to ensure the center is white
+            white_val = float(strand_energy * 0.85)
+            cv2.polylines(canvas, [pts], False, (white_val, white_val, white_val), 
                           thickness=int(weight), lineType=cv2.LINE_AA)
 
-    # Multi-pass Atmospheric Bloom
     if glow > 0:
         canvas += gaussian_filter(canvas, sigma=glow * 3) * 0.4
         canvas += gaussian_filter(canvas, sigma=glow * 10) * 0.2
@@ -113,43 +116,36 @@ def render_pro_light(complexity, strands, seed, exposure, glow, aberration, weig
         
     return np.clip(canvas * 255, 0, 255).astype(np.uint8)
 
-# --- UI STRUCTURE ---
+# --- UI ---
 st.title("🔦 Lights of Time Generator")
-
-with st.expander("📖 Studio Quick Start Guide"):
-    st.markdown("""
-    - **Complexity:** Set to 1-2 for sweeping Jaime Gorospe arcs.
-    - **Strands:** 20+ strands create the dense photographic 'bundle'.
-    - **Restore (🔄):** Recalls previous settings from the gallery instantly.
-    """)
-
-preview_area = st.empty()
 
 with st.sidebar:
     st.header("Camera Settings")
-    mode = st.radio("Output Type", ["Still Light", "Animated Loop"], key="render_mode_radio", help="Select Still for high-res PNG or Animated for seamless GIF.")
+    mode = st.radio("Output Type", ["Still Light", "Animated Loop"], key="render_mode_radio")
     
-    complexity = st.slider("Gesture Complexity", 1, 6, key="complexity_slider", help="1-2 for arcs, 5+ for tangled paths.")
-    strand_count = st.slider("Bundle Strands", 1, 50, key="strand_count_slider", help="Number of filaments in the bundle.")
-    seed = st.number_input("Seed", step=1, key="seed_val", help="Unique ID for the light path gesture.")
+    complexity = st.slider("Gesture Complexity", 1, 6, key="complexity_slider")
+    strand_count = st.slider("Bundle Strands", 1, 50, key="strand_count_slider")
+    seed = st.number_input("Seed", step=1, key="seed_val")
     
     with st.expander("Optics & Film", expanded=True):
-        st.button("🎲 Surprise Me!", on_click=callback_randomize, use_container_width=True, help="Randomize optics and seed.")
+        st.button("🎲 Surprise Me!", on_click=callback_randomize, use_container_width=True)
         st.divider()
-        exposure = st.slider("Luminosity / Exp", 0.5, 8.0, key="exposure", help="Brightness of the white-hot core.")
-        aberration = st.slider("Prism Diffraction", 0.0, 20.0, key="aberration", help="Spectral splitting on edges.")
-        glow = st.slider("Atmospheric Bloom", 0.0, 4.0, value=1.5, help="Soft light falloff into darkness.")
-        blur_val = st.slider("Lens Blur", 0.0, 5.0, key="blur_slider", help="Mimics photographic lens focus.")
-        line_weight = st.slider("Filament Weight", 0.5, 5.0, value=1.0, help="Thickness of central strands.")
+        exposure = st.slider("Luminosity / Exp", 0.5, 8.0, key="exposure")
+        aberration = st.slider("Prism Diffraction", 0.0, 20.0, key="aberration")
+        glow = st.slider("Atmospheric Bloom", 0.0, 4.0, value=1.5)
+        blur_val = st.slider("Lens Blur", 0.0, 5.0, key="blur_slider")
+        line_weight = st.slider("Filament Weight", 0.5, 5.0, value=1.0)
 
     st.divider()
-    gen_btn = st.button("EXECUTE EXPOSURE", type="primary", use_container_width=True, help="Start the light render.")
-    if st.button("Reset Studio", use_container_width=True, help="Deletes gallery history."): reset_app()
+    gen_btn = st.button("EXECUTE EXPOSURE", type="primary", use_container_width=True)
+    if st.button("Reset Studio", use_container_width=True): reset_app()
 
-# --- RENDER EXECUTION ---
+preview_area = st.empty()
+
+# --- EXECUTION ---
 if gen_btn:
     with preview_area.container():
-        bar = st.progress(0, text="Developing Light Physics...")
+        bar = st.progress(0, text="Developing Exposure...")
         if mode == "Still Light":
             img = render_pro_light(complexity, strand_count, seed, exposure, glow, aberration, line_weight, blur_val, 0)
             is_success, buffer = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
@@ -175,7 +171,7 @@ elif st.session_state.history:
         st.image(latest['data'], use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
-# GALLERY
+# GALLERY (Displays after the Hero section)
 if st.session_state.history:
     st.divider()
     st.subheader("Light Gallery")
@@ -184,11 +180,11 @@ if st.session_state.history:
         with cols[idx % 3]:
             st.image(item['data'], use_container_width=True)
             m = item['meta']
-            st.markdown(f"""<div class="metadata-card"><b>{m['Mode']}</b> • {item['time']}<br>Seed: {m['Seed']} | Aberr: {m['Aberr']}<br>Complexity: {m['Complexity']} | Strands: {m.get('Strands',25)}</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="metadata-card"><b>{m['Mode']}</b> • {item['time']}<br>Seed: {m['Seed']} | Aberr: {m['Aberr']}<br>Exp: {m['Exp']} | Strands: {m.get('Strands', 25)}</div>""", unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
             with c1: st.download_button("💾", item['data'], f"light_{idx}.{item['fmt']}", key=f"dl_{idx}")
-            with c2: st.button("🔄", key=f"res_{idx}", on_click=callback_restore, args=(m,), help="Restore settings.")
+            with c2: st.button("🔄", key=f"res_{idx}", on_click=callback_restore, args=(m,))
             with c3:
-                if st.button("🗑️", key=f"del_{idx}", help="Delete from gallery."):
+                if st.button("🗑️", key=f"del_{idx}"):
                     st.session_state.history.pop(idx)
                     st.rerun()
