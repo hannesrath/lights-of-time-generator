@@ -8,7 +8,7 @@ import random
 import time
 
 # PAGE CONFIG
-st.set_page_config(page_title="Lights of Time: Gorospe Studio", page_icon="🔦", layout="wide")
+st.set_page_config(page_title="Lights of Time: Motion Studio", page_icon="🔦", layout="wide")
 
 # UI STYLING
 st.markdown("""
@@ -20,23 +20,21 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# INITIALIZE HISTORY
 if 'history' not in st.session_state: st.session_state.history = []
 
 # --- MATH ENGINE ---
 
 def get_smooth_spine(complexity, seed, scale_factor, aspect_ratio):
-    """Generates the master path center-lines, adjusted for AR."""
+    """Generates the master path center-lines."""
     rng = np.random.RandomState(seed)
-    t = np.linspace(0, 1, 6000) 
+    t = np.linspace(0, 1, 8000) # High resolution for smooth motion
     x, y = np.zeros_like(t), np.zeros_like(t)
     
-    # Aspect Ratio Correction
-    # If portrait (9:16), we need to squeeze X and stretch Y slightly
+    # AR Correction
     ar_scale_x = 1.0
     ar_scale_y = 1.0
-    if aspect_ratio < 1.0: ar_scale_x = aspect_ratio # Portrait
-    else: ar_scale_y = 1.0 / aspect_ratio # Landscape
+    if aspect_ratio < 1.0: ar_scale_x = aspect_ratio 
+    else: ar_scale_y = 1.0 / aspect_ratio
 
     for i in range(1, complexity + 1):
         freq = rng.uniform(0.1, 0.4) * i 
@@ -48,7 +46,7 @@ def get_smooth_spine(complexity, seed, scale_factor, aspect_ratio):
     x = (x - np.mean(x)) * scale_factor
     y = (y - np.mean(y)) * scale_factor
     
-    # Normals for width
+    # Normals
     dx = np.gradient(x)
     dy = np.gradient(y)
     dist = np.sqrt(dx**2 + dy**2) + 1e-6
@@ -80,40 +78,54 @@ PALETTES = {
 # --- RENDER ENGINE ---
 
 def render_frame(params, prog):
-    # Set Canvas Dimensions based on Aspect Ratio
     h = 1080
     w = int(1080 * params['ar_val'])
     
     buffer = np.zeros((h, w, 3), dtype=np.float32)
     rng = np.random.RandomState(params['seed'])
-    
     palette = PALETTES[params['palette']]
     
-    # Draw Limit
-    draw_limit = 1.0 if params['mode'] == "Still Light" else prog
-    if draw_limit < 0.005: draw_limit = 0.005
+    # --- ANIMATION LOGIC: "TRAVELING PULSE" ---
+    # t moves from 0 to 1.
+    # We define a 'window' of time [start_t, end_t]
     
-    # Loop Fade
-    global_alpha = 1.0
-    if params['mode'] == "Animated Loop" and prog > 0.9:
-        global_alpha = 1.0 - ((prog - 0.9) * 10.0)
+    if params['mode'] == "Still Light":
+        # Show everything
+        t_start = 0.0
+        t_end = 1.0
+    else:
+        # ANIMATED LOOP
+        # The 'head' travels from 0 to 1 over the duration of the loop
+        # The 'tail' trails behind by 'trail_len' amount
+        # We scale prog to allow the tail to fully exit
+        
+        trail_len = params['trail_len']
+        
+        # total_travel_distance = 1.0 + trail_len (to allow full exit)
+        effective_prog = prog * (1.0 + trail_len * 0.5) 
+        
+        t_end = min(1.0, effective_prog)
+        t_start = max(0.0, effective_prog - trail_len)
+        
+        # If the window is effectively closed/empty, return black (or fade out)
+        if t_start >= 1.0: t_start = 0.999; t_end = 1.0 
 
-    # --- MULTI-STROKE LOOP ---
-    # We create a list of layers so we can blur them individually for DoF
-    layers = [] # (z_depth, image_layer)
+    layers = [] 
 
     for s_idx in range(params['num_strokes']):
         s_seed = params['seed'] + (s_idx * 500)
         s_rng = np.random.RandomState(s_seed)
-        
-        # Z-Depth: 0.5 (Far) to 1.5 (Close)
-        # Focus Plane is around 1.0
         z_depth = s_rng.uniform(0.5, 1.5)
         
         # 1. Path
         fx, fy, fnx, fny, t_vals = get_smooth_spine(params['complexity'], s_seed, params['scale'] * (1.0/z_depth), params['ar_val'])
-        mask = t_vals <= draw_limit
-        if np.sum(mask) < 10: continue
+        
+        # 2. SLICING THE TIME WINDOW
+        # We only keep points that are between t_start and t_end
+        mask = (t_vals >= t_start) & (t_vals <= t_end)
+        
+        # Optimization: If this stroke isn't active in this time window, skip it
+        if np.sum(mask) < 2: continue
         
         mx, my = fx[mask], fy[mask]
         nx, ny = fnx[mask], fny[mask]
@@ -123,10 +135,23 @@ def render_frame(params, prog):
         off_x = s_rng.uniform(-0.1, 0.1) * (w/2)
         off_y = s_rng.uniform(-0.1, 0.1) * (h/2)
         
-        # 2. Tool Type
         is_ribbon = s_rng.rand() < 0.5
-        
         stroke_layer = np.zeros((h, w, 3), dtype=np.float32)
+        
+        # --- FADE LOGIC ---
+        # We need to fade the 'tail' points so they don't pop off
+        # Normalized position within the current drawing window (0=tail, 1=head)
+        # Avoid div/0
+        window_size = (t_end - t_start) + 1e-6
+        # normalized_pos = (ct - t_start) / window_size
+        # Actually, simpler: just map 't' to alpha. 
+        # Points near t_start should be transparent. Points near t_end opaque.
+        
+        # Create an alpha array for this segment
+        segment_alpha = (ct - t_start) / window_size
+        segment_alpha = np.clip(segment_alpha, 0.0, 1.0)
+        # Apply a curve so it stays bright longer then drops off
+        segment_alpha = np.power(segment_alpha, 0.5) 
         
         if is_ribbon:
             # === SCATTER RIBBON ===
@@ -143,12 +168,22 @@ def render_frame(params, prog):
                 
                 bx = mx + nx * (current_offset * 0.002)
                 by = my + ny * (current_offset * 0.002)
-                
                 thick = max(1, int(s_rng.uniform(0.5, 2.5)))
                 
                 px = bx*(h*0.4) + w/2 + off_x
                 py = by*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
+                
+                # We can't apply per-vertex alpha easily in CV2 polylines (it takes one color).
+                # Approximation: Split line into chunks? Too slow.
+                # Better: Use the average alpha of the segment for now, or just the global fade.
+                # For high-speed rendering, we'll apply a global fade to the whole stroke *segment* # based on where the "center of mass" of this segment is. 
+                # IMPROVEMENT: Actually, since we slice small updates, the whole 'mask' is a time slice.
+                # But for long trails, this slice is long. 
+                
+                # Let's simply draw the line. The "Tail Fade" is handled by the mask moving.
+                # To make the tail soft, we need 'Head' and 'Tail' gradients.
+                # For this version, let's keep it solid but allow the "Tip" to be bright.
                 
                 cv2.polylines(stroke_layer, [pts], False, base_col * 0.4, thickness=thick, lineType=cv2.LINE_AA)
 
@@ -167,26 +202,23 @@ def render_frame(params, prog):
                 thick = 1 if s_rng.rand() > 0.3 else 2
                 cv2.polylines(stroke_layer, [pts], False, base_col * 1.2, thickness=thick, lineType=cv2.LINE_AA)
                 
-                if params['mode'] == "Animated Loop" and len(pts) > 5:
-                     cv2.polylines(stroke_layer, [pts[-15:]], False, (2,2,2), thickness=thick+2, lineType=cv2.LINE_AA)
+                # DRAW THE TIP (The Light Source)
+                # If we are in animation mode, we draw a bright white dot at the *end* of the segment
+                # This simulates the LED bulb itself.
+                if params['mode'] == "Animated Loop" and len(pts) > 2:
+                    # Get the very last point (current time)
+                    tip_pt = pts[-1:] 
+                    # Draw a bright glowing dot
+                    cv2.circle(stroke_layer, tuple(tip_pt[0]), thickness+2, (1.0, 1.0, 1.0), -1)
 
         layers.append((z_depth, stroke_layer))
 
-    # --- COMPOSITING WITH DEPTH OF FIELD ---
-    # Sort layers by depth (far to near) - painter's algorithm
-    # Actually, additive doesn't care about order, but blur does.
-    
+    # --- COMPOSITING ---
     for z, layer in layers:
-        # DoF Logic:
-        # Focus plane is 1.0. Distance from 1.0 determines blur.
         dist_from_focus = abs(z - 1.0)
-        
-        # Blur amount based on distance (f/1.4 simulation)
         blur_amount = dist_from_focus * params['dof'] * 10.0
-        
         if blur_amount > 0.5:
             layer = gaussian_filter(layer, sigma=blur_amount)
-            
         buffer += layer
 
     # --- POST ---
@@ -200,7 +232,6 @@ def render_frame(params, prog):
             buffer[:, :-s, 0] = buffer[:, s:, 0]
             buffer[:, s:, 2] = buffer[:, :-s, 2]
             
-    buffer *= global_alpha
     return np.clip(buffer, 0, 1.0) * 255
 
 # --- UI HANDLERS ---
@@ -217,12 +248,7 @@ def restore_settings(meta):
     st.session_state['mode'] = meta['mode']
     st.session_state['pal'] = meta['palette']
     st.session_state['dof'] = meta['dof']
-    
-    # Map AR string back to index
-    ar_map = {"1:1 (Square)": 0, "9:16 (Story)": 1, "16:9 (Cinema)": 2, "4:3 (Classic)": 3}
-    # We can't set index directly on radio easily if key is used, but we can try updating session state
-    # A workaround for radio index is usually not needed if we just render with the restored params.
-    # But to update UI:
+    st.session_state['trail_len'] = meta.get('trail_len', 0.3)
     st.session_state['ar_select'] = meta['ar_name']
 
 def delete_item(idx):
@@ -234,38 +260,45 @@ st.title("🔦 Lights of Time")
 
 with st.sidebar:
     st.header("1. Canvas & Mode")
-    mode = st.radio("Output Mode", ["Still Light", "Animated Loop"], key="mode", help="Still image or 60-frame GIF write-on.")
+    mode = st.radio("Output Mode", ["Still Light", "Animated Loop"], key="mode")
     ar_options = {"1:1 (Square)": 1.0, "9:16 (Story)": 9/16, "16:9 (Cinema)": 16/9, "4:3 (Classic)": 4/3}
-    ar_name = st.selectbox("Aspect Ratio", list(ar_options.keys()), key="ar_select", help="Shape of the final output.")
+    ar_name = st.selectbox("Aspect Ratio", list(ar_options.keys()), key="ar_select")
     ar_val = ar_options[ar_name]
+
+    # ANIMATION CONTROLS (Only visible if Animated)
+    if mode == "Animated Loop":
+        st.subheader("Animation Physics")
+        trail_len = st.slider("Trail Duration", 0.1, 1.0, 0.4, key="trail_len", help="Short = Comet, Long = Exposure.")
+    else:
+        trail_len = 1.0 # Default full draw
 
     st.divider()
     
     st.header("2. Art Direction")
-    palette = st.selectbox("Color Palette", list(PALETTES.keys()), key="pal", help="The color scheme of the light tools.")
-    scale = st.slider("Zoom", 0.5, 1.5, 0.85, key="scale", help="How close the camera is to the light subject.")
-    num_strokes = st.number_input("Light Sources", 1, 30, 12, key="num_strokes", help="Number of individual light strokes in the scene.")
+    palette = st.selectbox("Color Palette", list(PALETTES.keys()), key="pal")
+    scale = st.slider("Zoom", 0.5, 1.5, 0.85, key="scale")
+    num_strokes = st.number_input("Light Sources", 1, 30, 12, key="num_strokes")
 
     st.divider()
     
     st.header("3. Brush Physics")
-    complexity = st.slider("Gesture Complexity", 1, 4, 2, key="complexity", help="1 = Simple arcs, 4 = Complex knots.")
-    width_scale = st.slider("Scatter Width", 0.1, 3.0, 1.0, key="width_scale", help="How wide the ribbon brushes scatter.")
-    spread = st.slider("Cluster Spread", 0.1, 3.0, 1.0, key="spread", help="How tight the fiber clusters are.")
+    complexity = st.slider("Gesture Complexity", 1, 4, 2, key="complexity")
+    width_scale = st.slider("Scatter Width", 0.1, 3.0, 1.0, key="width_scale")
+    spread = st.slider("Cluster Spread", 0.1, 3.0, 1.0, key="spread")
     
     st.divider()
     
     st.header("4. Lens & Optics")
-    exposure = st.slider("Exposure", 0.1, 2.0, 0.6, key="exposure", help="Brightness of the sensor.")
-    dof = st.slider("Depth of Field (Blur)", 0.0, 2.0, 1.0, key="dof", help="Simulates Z-depth blur. 0 = Infinite focus, 2 = Macro focus.")
-    glow = st.slider("Glow Intensity", 0.0, 3.0, 1.0, key="glow", help="Soft atmospheric bloom.")
-    aberration = st.slider("Prism Shift", 0.0, 10.0, 3.0, key="aberration", help="Chromatic aberration on the edges.")
+    exposure = st.slider("Exposure", 0.1, 2.0, 0.6, key="exposure")
+    dof = st.slider("Depth of Field", 0.0, 2.0, 1.0, key="dof")
+    glow = st.slider("Glow Intensity", 0.0, 3.0, 1.0, key="glow")
+    aberration = st.slider("Prism Shift", 0.0, 10.0, 3.0, key="aberration")
     
     st.divider()
-    seed = st.number_input("Seed", step=1, value=501, key="seed", help="Random number generator seed.")
+    seed = st.number_input("Seed", step=1, value=501, key="seed")
     gen = st.button("EXPOSE FILM", type="primary", use_container_width=True)
 
-# --- MAIN PREVIEW AREA ---
+# --- MAIN ---
 main = st.empty()
 
 if gen:
@@ -273,21 +306,21 @@ if gen:
         "seed": seed, "complexity": complexity, "exposure": exposure,
         "glow": glow, "aberration": aberration, "spread": spread,
         "num_strokes": num_strokes, "scale": scale, "width_scale": width_scale,
-        "mode": mode, "palette": palette, "dof": dof, "ar_val": ar_val, "ar_name": ar_name
+        "mode": mode, "palette": palette, "dof": dof, "ar_val": ar_val, "ar_name": ar_name,
+        "trail_len": trail_len
     }
     
     with main.container():
         bar = st.progress(0, text="Developing Exposure...")
         if mode == "Still Light":
             res = render_frame(p, 1.0)
-            # Display
             st.image(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB), use_container_width=True)
-            # Encode
             is_success, buffer = cv2.imencode(".png", res)
             data = buffer.tobytes()
             fmt = "png"
         else:
             frames = []
+            # 60 Frames
             for i in range(60):
                 res = render_frame(p, i/60)
                 frames.append(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB))
@@ -298,35 +331,25 @@ if gen:
             fmt = "gif"
             st.image(data, use_container_width=True)
             
-        # Add to history with metadata
         st.session_state.history.insert(0, {"data": data, "fmt": fmt, "meta": p, "time": time.strftime("%H:%M:%S")})
 
-# --- GALLERY SECTION ---
+# --- GALLERY ---
 if st.session_state.history:
     st.divider()
     st.subheader(f"Film Roll ({len(st.session_state.history)})")
-    
-    # Grid layout for gallery
     cols = st.columns(3)
     for idx, item in enumerate(st.session_state.history):
         with cols[idx % 3]:
-            # Card container
-            with st.container():
+            with st.container(border=True):
                 st.image(item['data'], use_container_width=True)
                 m = item['meta']
-                
-                # Metadata tag
                 st.caption(f"**{m['mode']}** • {m['ar_name']} • Seed: {m['seed']}")
-                
-                # Action Buttons
                 c1, c2, c3 = st.columns([1, 1, 1])
-                with c1:
-                    st.download_button("💾", item['data'], f"light_{idx}.{item['fmt']}", key=f"dl_{idx}")
-                with c2:
-                    if st.button("Apply", key=f"res_{idx}", help="Restore these settings"):
+                with c1: st.download_button("💾", item['data'], f"light_{idx}.{item['fmt']}", key=f"dl_{idx}")
+                with c2: 
+                    if st.button("Apply", key=f"res_{idx}"): 
                         restore_settings(m)
                         st.rerun()
-                with c3:
-                    if st.button("🗑️", key=f"del_{idx}", help="Delete image"):
+                with c3: 
+                    if st.button("🗑️", key=f"del_{idx}"): 
                         delete_item(idx)
-            st.divider()
