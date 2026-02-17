@@ -28,25 +28,28 @@ st.markdown("""
     }
     h1, h2, h3 { color: #fff !important; letter-spacing: -1px; }
     div.stButton > button { background-color: #1a1a1a !important; color: #fff !important; border: 1px solid #333 !important; }
+    div.stButton > button:hover { border-color: #555 !important; background-color: #222 !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SESSION STATE & CALLBACKS ---
+# --- SESSION STATE INITIALIZATION ---
 if 'history' not in st.session_state: st.session_state.history = []
 
+# --- CALLBACKS (The Error Fixes) ---
 def callback_randomize():
     st.session_state['seed_val'] = random.randint(1, 999999)
-    st.session_state['exposure'] = round(random.uniform(2.0, 4.0), 1)
-    st.session_state['aberration'] = round(random.uniform(4.0, 12.0), 1)
+    st.session_state['exposure'] = round(random.uniform(2.5, 4.5), 1)
+    st.session_state['aberration'] = round(random.uniform(5.0, 15.0), 1)
     st.toast("New light paths discovered! 🔦")
 
 def callback_restore(meta):
     st.session_state['render_mode_radio'] = meta["Mode"]
     st.session_state['seed_val'] = meta["Seed"]
     st.session_state['exposure'] = meta["Exp"]
-    st.session_state['complexity'] = meta["Complexity"]
-    st.session_state['strand_count'] = meta.get("Strands", 25)
+    st.session_state['complexity_slider'] = meta["Complexity"]
+    st.session_state['strand_count_slider'] = meta.get("Strands", 25)
     st.session_state['blur_slider'] = meta.get("Blur", 0.8)
+    st.session_state['aberration'] = meta["Aberr"]
 
 def reset_app():
     st.session_state.history = []
@@ -55,19 +58,17 @@ def reset_app():
 # --- THE PHOTOGRAPHIC ENGINE ---
 
 def get_path(complexity, seed, prog, b_idx):
-    """Generates sweeping gestural arcs with micro-variations per strand."""
+    """Generates organic gestural arcs with micro-variations per strand."""
     rng = np.random.RandomState(seed + b_idx)
     t = np.linspace(0, 1, 2000)
     x, y = np.zeros_like(t), np.zeros_like(t)
     
     # Jaime Gorospe's paths are low-frequency 'Gestures'
     for i in range(1, complexity + 1):
-        # Very low frequencies (0.1 - 0.6) prevent 'cheap' scribbles
-        freq = rng.uniform(0.1, 0.6) * i
+        freq = rng.uniform(0.1, 0.5) * i
         amp = rng.uniform(0.7, 1.4) / (i**0.9)
         phase = rng.uniform(0, 2*np.pi) + (prog * 2 * np.pi)
         
-        # Add micro-drift for bundle realism
         drift = b_idx * 0.003
         x += amp * np.cos(freq * t * 2 * np.pi + phase + drift)
         y += amp * np.sin(freq * t * 1.8 * np.pi + phase * 0.4 + drift)
@@ -75,14 +76,14 @@ def get_path(complexity, seed, prog, b_idx):
 
 def render_pro_light(complexity, strands, seed, exposure, glow, aberration, weight, blur, prog):
     w, h = 1080, 1080
-    # Use float32 for HDR additive blending (overexposes to white naturally)
     canvas = np.zeros((h, w, 3), dtype=np.float32)
+    
+    # FIXED: Scale the white core correctly using NumPy arrays
+    white_core = np.array([1.0, 1.0, 1.0], dtype=np.float32)
     
     for s_idx in range(strands):
         x, y = get_path(complexity, seed, prog, s_idx)
-        
-        # Spectral diffraction primaries
-        colors = [(1.0, 0.1, 0.05), (0.1, 1.0, 0.2), (0.05, 0.2, 1.0)] 
+        colors = [np.array([1.0, 0.1, 0.05]), np.array([0.1, 1.0, 0.2]), np.array([0.05, 0.2, 1.0])]
         offsets = [aberration * -1.5, 0, aberration * 1.5]
         
         strand_energy = exposure * np.random.RandomState(seed + s_idx).uniform(0.4, 1.0)
@@ -90,66 +91,65 @@ def render_pro_light(complexity, strands, seed, exposure, glow, aberration, weig
         for color, offset in zip(colors, offsets):
             pts = np.stack([x * 380 + (w/2) + offset, y * 380 + (h/2)], axis=1).astype(np.int32)
             
-            # Layer 1: The Gaseous Envelope (Atmospheric falloff)
-            cv2.polylines(canvas, [pts], False, np.array(color) * (strand_energy * 0.02), 
+            # Layer 1: Gaseous Atmospheric Glow
+            cv2.polylines(canvas, [pts], False, color * (strand_energy * 0.03), 
                           thickness=int(weight * 25), lineType=cv2.LINE_AA)
             
-            # Layer 2: The Prismatic Layer (Medium glow)
-            cv2.polylines(canvas, [pts], False, np.array(color) * (strand_energy * 0.15), 
+            # Layer 2: Prismatic Diffused Light
+            cv2.polylines(canvas, [pts], False, color * (strand_energy * 0.2), 
                           thickness=int(weight * 6), lineType=cv2.LINE_AA)
             
-            # Layer 3: The Filament (Incandescent white-hot core)
-            cv2.polylines(canvas, [pts], False, (1.0, 1.0, 1.0) * (strand_energy * 0.8), 
+            # Layer 3: Incandescent Filament (The "White-Hot" Core)
+            cv2.polylines(canvas, [pts], False, white_core * (strand_energy * 0.85), 
                           thickness=int(weight), lineType=cv2.LINE_AA)
 
     # Multi-pass Atmospheric Bloom
     if glow > 0:
         canvas += gaussian_filter(canvas, sigma=glow * 3) * 0.4
-        canvas += gaussian_filter(canvas, sigma=glow * 12) * 0.2
+        canvas += gaussian_filter(canvas, sigma=glow * 10) * 0.2
     
     if blur > 0:
         canvas = gaussian_filter(canvas, sigma=blur)
         
     return np.clip(canvas * 255, 0, 255).astype(np.uint8)
 
-# --- UI ---
-
+# --- UI STRUCTURE ---
 st.title("🔦 Lights of Time Generator")
 
 with st.expander("📖 Studio Quick Start Guide"):
     st.markdown("""
-    - **Complexity:** Set to **1 or 2** for sweeping Jaime Gorospe arcs.
-    - **Strands:** 20+ strands create a dense, professional 'bundle'.
-    - **Prism:** Controls spectral splitting on the edges.
-    - **Exposure:** Increases 'white-hot' core intensity.
+    - **Complexity:** Set to 1-2 for sweeping Jaime Gorospe arcs.
+    - **Strands:** 20+ strands create the dense photographic 'bundle'.
+    - **Restore (🔄):** Recalls previous settings from the gallery instantly.
     """)
 
 preview_area = st.empty()
 
 with st.sidebar:
-    st.header("Studio Controls")
-    mode = st.radio("Output Type", ["Still Light", "Animated Loop"], key="render_mode_radio", help="Still generates a PNG; Animated creates a seamless loop GIF.")
+    st.header("Camera Settings")
+    mode = st.radio("Output Type", ["Still Light", "Animated Loop"], key="render_mode_radio", help="Select Still for high-res PNG or Animated for seamless GIF.")
     
-    complexity = st.slider("Gesture Complexity", 1, 6, key="complexity", help="Sweeping arcs (1-2) vs Tangled (5+).")
-    strand_count = st.slider("Bundle Strands", 1, 50, value=25, key="strand_count", help="Number of individual light paths.")
-    seed = st.number_input("Seed", step=1, key="seed_val", help="Unique ID for the gesture.")
+    complexity = st.slider("Gesture Complexity", 1, 6, key="complexity_slider", help="1-2 for arcs, 5+ for tangled paths.")
+    strand_count = st.slider("Bundle Strands", 1, 50, key="strand_count_slider", help="Number of filaments in the bundle.")
+    seed = st.number_input("Seed", step=1, key="seed_val", help="Unique ID for the light path gesture.")
     
     with st.expander("Optics & Film", expanded=True):
-        st.button("🎲 Surprise Me!", on_click=callback_randomize, use_container_width=True)
+        st.button("🎲 Surprise Me!", on_click=callback_randomize, use_container_width=True, help="Randomize optics and seed.")
         st.divider()
-        exposure = st.slider("Luminosity / Exp", 0.5, 8.0, key="exposure", help="Increases intensity of the white-hot core.")
-        aberration = st.slider("Prism Diffraction", 0.0, 20.0, key="aberration", help="Spectral splitting on line edges.")
+        exposure = st.slider("Luminosity / Exp", 0.5, 8.0, key="exposure", help="Brightness of the white-hot core.")
+        aberration = st.slider("Prism Diffraction", 0.0, 20.0, key="aberration", help="Spectral splitting on edges.")
         glow = st.slider("Atmospheric Bloom", 0.0, 4.0, value=1.5, help="Soft light falloff into darkness.")
-        blur_val = st.slider("Lens Blur", 0.0, 5.0, value=0.8, key="blur_slider", help="Mimics lens focus.")
+        blur_val = st.slider("Lens Blur", 0.0, 5.0, key="blur_slider", help="Mimics photographic lens focus.")
         line_weight = st.slider("Filament Weight", 0.5, 5.0, value=1.0, help="Thickness of central strands.")
 
     st.divider()
-    gen_btn = st.button("EXECUTE EXPOSURE", type="primary", use_container_width=True)
-    if st.button("Reset Studio", use_container_width=True): reset_app()
+    gen_btn = st.button("EXECUTE EXPOSURE", type="primary", use_container_width=True, help="Start the light render.")
+    if st.button("Reset Studio", use_container_width=True, help="Deletes gallery history."): reset_app()
 
+# --- RENDER EXECUTION ---
 if gen_btn:
     with preview_area.container():
-        bar = st.progress(0, text="Simulating Light Physics...")
+        bar = st.progress(0, text="Developing Light Physics...")
         if mode == "Still Light":
             img = render_pro_light(complexity, strand_count, seed, exposure, glow, aberration, line_weight, blur_val, 0)
             is_success, buffer = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
@@ -175,6 +175,7 @@ elif st.session_state.history:
         st.image(latest['data'], use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
+# GALLERY
 if st.session_state.history:
     st.divider()
     st.subheader("Light Gallery")
@@ -183,11 +184,11 @@ if st.session_state.history:
         with cols[idx % 3]:
             st.image(item['data'], use_container_width=True)
             m = item['meta']
-            st.markdown(f"""<div class="metadata-card"><b>{m['Mode']}</b> • {item['time']}<br>Seed: {m['Seed']} | Aberr: {m['Aberr']}<br>Exp: {m['Exp']} | Complexity: {m['Complexity']}</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="metadata-card"><b>{m['Mode']}</b> • {item['time']}<br>Seed: {m['Seed']} | Aberr: {m['Aberr']}<br>Complexity: {m['Complexity']} | Strands: {m.get('Strands',25)}</div>""", unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
             with c1: st.download_button("💾", item['data'], f"light_{idx}.{item['fmt']}", key=f"dl_{idx}")
             with c2: st.button("🔄", key=f"res_{idx}", on_click=callback_restore, args=(m,), help="Restore settings.")
             with c3:
-                if st.button("🗑️", key=f"del_{idx}"):
+                if st.button("🗑️", key=f"del_{idx}", help="Delete from gallery."):
                     st.session_state.history.pop(idx)
                     st.rerun()
