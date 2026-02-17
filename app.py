@@ -85,29 +85,15 @@ def render_frame(params, prog):
     rng = np.random.RandomState(params['seed'])
     palette = PALETTES[params['palette']]
     
-    # --- ANIMATION LOGIC: "TRAVELING PULSE" ---
-    # t moves from 0 to 1.
-    # We define a 'window' of time [start_t, end_t]
-    
+    # Animation Physics
     if params['mode'] == "Still Light":
-        # Show everything
         t_start = 0.0
         t_end = 1.0
     else:
-        # ANIMATED LOOP
-        # The 'head' travels from 0 to 1 over the duration of the loop
-        # The 'tail' trails behind by 'trail_len' amount
-        # We scale prog to allow the tail to fully exit
-        
         trail_len = params['trail_len']
-        
-        # total_travel_distance = 1.0 + trail_len (to allow full exit)
         effective_prog = prog * (1.0 + trail_len * 0.5) 
-        
         t_end = min(1.0, effective_prog)
         t_start = max(0.0, effective_prog - trail_len)
-        
-        # If the window is effectively closed/empty, return black (or fade out)
         if t_start >= 1.0: t_start = 0.999; t_end = 1.0 
 
     layers = [] 
@@ -117,41 +103,20 @@ def render_frame(params, prog):
         s_rng = np.random.RandomState(s_seed)
         z_depth = s_rng.uniform(0.5, 1.5)
         
-        # 1. Path
         fx, fy, fnx, fny, t_vals = get_smooth_spine(params['complexity'], s_seed, params['scale'] * (1.0/z_depth), params['ar_val'])
         
-        # 2. SLICING THE TIME WINDOW
-        # We only keep points that are between t_start and t_end
         mask = (t_vals >= t_start) & (t_vals <= t_end)
-        
-        # Optimization: If this stroke isn't active in this time window, skip it
         if np.sum(mask) < 2: continue
         
         mx, my = fx[mask], fy[mask]
         nx, ny = fnx[mask], fny[mask]
         ct = t_vals[mask]
         
-        # Position Offset
         off_x = s_rng.uniform(-0.1, 0.1) * (w/2)
         off_y = s_rng.uniform(-0.1, 0.1) * (h/2)
         
         is_ribbon = s_rng.rand() < 0.5
         stroke_layer = np.zeros((h, w, 3), dtype=np.float32)
-        
-        # --- FADE LOGIC ---
-        # We need to fade the 'tail' points so they don't pop off
-        # Normalized position within the current drawing window (0=tail, 1=head)
-        # Avoid div/0
-        window_size = (t_end - t_start) + 1e-6
-        # normalized_pos = (ct - t_start) / window_size
-        # Actually, simpler: just map 't' to alpha. 
-        # Points near t_start should be transparent. Points near t_end opaque.
-        
-        # Create an alpha array for this segment
-        segment_alpha = (ct - t_start) / window_size
-        segment_alpha = np.clip(segment_alpha, 0.0, 1.0)
-        # Apply a curve so it stays bright longer then drops off
-        segment_alpha = np.power(segment_alpha, 0.5) 
         
         if is_ribbon:
             # === SCATTER RIBBON ===
@@ -174,17 +139,6 @@ def render_frame(params, prog):
                 py = by*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
                 
-                # We can't apply per-vertex alpha easily in CV2 polylines (it takes one color).
-                # Approximation: Split line into chunks? Too slow.
-                # Better: Use the average alpha of the segment for now, or just the global fade.
-                # For high-speed rendering, we'll apply a global fade to the whole stroke *segment* # based on where the "center of mass" of this segment is. 
-                # IMPROVEMENT: Actually, since we slice small updates, the whole 'mask' is a time slice.
-                # But for long trails, this slice is long. 
-                
-                # Let's simply draw the line. The "Tail Fade" is handled by the mask moving.
-                # To make the tail soft, we need 'Head' and 'Tail' gradients.
-                # For this version, let's keep it solid but allow the "Tip" to be bright.
-                
                 cv2.polylines(stroke_layer, [pts], False, base_col * 0.4, thickness=thick, lineType=cv2.LINE_AA)
 
         else:
@@ -202,14 +156,11 @@ def render_frame(params, prog):
                 thick = 1 if s_rng.rand() > 0.3 else 2
                 cv2.polylines(stroke_layer, [pts], False, base_col * 1.2, thickness=thick, lineType=cv2.LINE_AA)
                 
-                # DRAW THE TIP (The Light Source)
-                # If we are in animation mode, we draw a bright white dot at the *end* of the segment
-                # This simulates the LED bulb itself.
+                # DRAW TIP (FIXED VARIABLE NAME HERE)
                 if params['mode'] == "Animated Loop" and len(pts) > 2:
-                    # Get the very last point (current time)
                     tip_pt = pts[-1:] 
-                    # Draw a bright glowing dot
-                    cv2.circle(stroke_layer, tuple(tip_pt[0]), thickness+2, (1.0, 1.0, 1.0), -1)
+                    # Fixed: changed 'thickness' to 'thick'
+                    cv2.circle(stroke_layer, tuple(tip_pt[0]), thick+2, (1.0, 1.0, 1.0), -1)
 
         layers.append((z_depth, stroke_layer))
 
@@ -265,12 +216,11 @@ with st.sidebar:
     ar_name = st.selectbox("Aspect Ratio", list(ar_options.keys()), key="ar_select")
     ar_val = ar_options[ar_name]
 
-    # ANIMATION CONTROLS (Only visible if Animated)
     if mode == "Animated Loop":
         st.subheader("Animation Physics")
         trail_len = st.slider("Trail Duration", 0.1, 1.0, 0.4, key="trail_len", help="Short = Comet, Long = Exposure.")
     else:
-        trail_len = 1.0 # Default full draw
+        trail_len = 1.0 
 
     st.divider()
     
@@ -320,7 +270,6 @@ if gen:
             fmt = "png"
         else:
             frames = []
-            # 60 Frames
             for i in range(60):
                 res = render_frame(p, i/60)
                 frames.append(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB))
