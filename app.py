@@ -25,10 +25,10 @@ if 'history' not in st.session_state: st.session_state.history = []
 def get_smooth_spine(complexity, seed, scale_factor):
     """Generates the master path center-lines."""
     rng = np.random.RandomState(seed)
-    t = np.linspace(0, 1, 5000) 
+    t = np.linspace(0, 1, 6000) # Higher res for thin lines
     x, y = np.zeros_like(t), np.zeros_like(t)
     
-    # Low frequency sweeping arcs (Jaime Gorospe style)
+    # Low frequency sweeping arcs
     for i in range(1, complexity + 1):
         freq = rng.uniform(0.1, 0.4) * i 
         amp = rng.uniform(0.5, 1.2) / (i**0.5)
@@ -49,23 +49,22 @@ def get_path_normals(x, y):
     return nx, ny
 
 # --- PALETTE DEFINITIONS ---
-# BGR Colors (0-1 range)
 PALETTES = {
     "Gorospe Gold/Ice": {
-        "ribbons": [(0.05, 0.5, 1.0), (0.0, 0.7, 1.0), (0.1, 0.3, 0.9)], # Warm Ambers/Gold
-        "clusters": [(1.0, 1.0, 1.0), (0.9, 0.9, 1.0), (0.8, 0.8, 1.0)], # Cool Whites
+        "ribbons": [(0.05, 0.5, 1.0), (0.0, 0.7, 1.0), (0.1, 0.3, 0.9)], 
+        "clusters": [(1.0, 1.0, 1.0), (0.9, 0.9, 1.0), (0.8, 0.8, 1.0)], 
     },
     "Electric Neon": {
-        "ribbons": [(1.0, 0.2, 0.0), (1.0, 0.0, 0.5), (0.8, 0.0, 1.0)], # Blue/Purple/Cyan
-        "clusters": [(1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0, 1.0)], # Cyan/Green
+        "ribbons": [(1.0, 0.2, 0.0), (1.0, 0.0, 0.5), (0.8, 0.0, 1.0)], 
+        "clusters": [(1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0, 1.0)], 
     },
     "Tungsten Wire": {
-        "ribbons": [(0.1, 0.2, 0.8), (0.1, 0.1, 0.6), (0.3, 0.4, 0.9)], # Deep Oranges/Browns
-        "clusters": [(0.5, 0.6, 1.0), (0.4, 0.4, 0.9), (0.8, 0.8, 0.8)], # Warm Whites
+        "ribbons": [(0.1, 0.2, 0.8), (0.1, 0.1, 0.6), (0.3, 0.4, 0.9)], 
+        "clusters": [(0.5, 0.6, 1.0), (0.4, 0.4, 0.9), (0.8, 0.8, 0.8)], 
     },
     "Prism Minimal": {
-        "ribbons": [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8)], # White/Grey
-        "clusters": [(1.0, 1.0, 1.0)], # Pure White
+        "ribbons": [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8)], 
+        "clusters": [(1.0, 1.0, 1.0)], 
     }
 }
 
@@ -76,7 +75,7 @@ def render_frame(params, prog):
     
     palette = PALETTES[params['palette']]
     
-    # Animation: Draw up to 'prog' % of the path
+    # Animation: Draw up to 'prog' %
     draw_limit = 1.0 if params['mode'] == "Still Light" else prog
     if draw_limit < 0.005: draw_limit = 0.005
     
@@ -89,8 +88,12 @@ def render_frame(params, prog):
         s_seed = params['seed'] + (s_idx * 500)
         s_rng = np.random.RandomState(s_seed)
         
+        # --- Z-DEPTH SIMULATION ---
+        # Vary the scale significantly to push some strokes "back"
+        z_depth = s_rng.uniform(0.6, 1.4) 
+        
         # 1. Path Generation
-        fx, fy, t_vals = get_smooth_spine(params['complexity'], s_seed, params['scale'] * s_rng.uniform(0.9, 1.1))
+        fx, fy, t_vals = get_smooth_spine(params['complexity'], s_seed, params['scale'] * z_depth)
         
         # 2. Slicing
         mask = t_vals <= draw_limit
@@ -98,78 +101,78 @@ def render_frame(params, prog):
         mx, my = fx[mask], fy[mask]
         ct = t_vals[mask]
         
-        # 3. Tool Selection (Ribbon vs Cluster)
-        # 50/50 split
+        # 3. Tool Selection
         is_ribbon = s_rng.rand() < 0.5
         
-        # Offset position slightly
+        # Offset position
         off_x = s_rng.uniform(-0.1, 0.1) * 500
         off_y = s_rng.uniform(-0.1, 0.1) * 500
         
         temp = np.zeros((h, w, 3), dtype=np.float32)
         
         if is_ribbon:
-            # === RIBBON TOOL (Wide, Twisting) ===
+            # === RIBBON TOOL ===
             nx, ny = get_path_normals(mx, my)
             
-            # Twist: Sine wave modifies width
             twist_freq = s_rng.uniform(2.0, 6.0)
             twist_phase = s_rng.uniform(0, 2*np.pi)
             twist = np.abs(np.sin(ct * twist_freq + twist_phase))
             
-            # --- THE FIX: Reduced Base Width ---
-            # Reduced from 5.0 to 1.5 to make ribbons elegant and thin
-            base_w = 1.5 * params['width_scale']
-            width = (twist * base_w) + 1.0 # Minimum 1px width
+            # --- THE FIX: TINY BASE WIDTH ---
+            # Reduced to 0.4 for a "distant tape" look
+            # We also scale width by z_depth (further away = thinner)
+            base_w = 0.4 * params['width_scale'] * z_depth
+            width = (twist * base_w * 20.0) + 1.0 
             
             # Geometry
             lx = mx + nx * (width/2); ly = my + ny * (width/2)
             rx = mx - nx * (width/2); ry = my - ny * (width/2)
             
-            # Map to pixels
             pl = np.stack([lx*450 + w/2 + off_x, ly*450 + h/2 + off_y], axis=1)
             pr = np.stack([rx*450 + w/2 + off_x, ry*450 + h/2 + off_y], axis=1)[::-1]
             poly = np.concatenate([pl, pr]).astype(np.int32)
             
             # Color
             c = palette["ribbons"][s_rng.randint(0, len(palette["ribbons"]))]
-            # Ribbons are slightly transparent
-            col = np.array(c) * params['exposure'] * 0.6 
+            # Further away = Dimmer
+            dist_dim = 1.0 if z_depth > 1.0 else 0.7
+            col = np.array(c) * params['exposure'] * 0.6 * dist_dim
             
             cv2.fillPoly(temp, [poly], col, lineType=cv2.LINE_AA)
             
-            # Add a hot core line to the ribbon
+            # Hot core (very thin)
             core_pts = np.stack([mx*450 + w/2 + off_x, my*450 + h/2 + off_y], axis=1).astype(np.int32)
-            cv2.polylines(temp, [core_pts], False, col * 1.5, thickness=1, lineType=cv2.LINE_AA)
+            cv2.polylines(temp, [core_pts], False, col * 1.8, thickness=1, lineType=cv2.LINE_AA)
 
         else:
-            # === CLUSTER TOOL (Thin, Parallel) ===
-            num_fibers = s_rng.randint(4, 10)
+            # === CLUSTER TOOL ===
+            num_fibers = s_rng.randint(3, 7) # Fewer fibers for cleaner look
             c = palette["clusters"][s_rng.randint(0, len(palette["clusters"]))]
             
             for f in range(num_fibers):
-                # Parallel offset
-                fo = (f - num_fibers/2) * params['spread'] * 0.003
+                # Very tight spread
+                fo = (f - num_fibers/2) * params['spread'] * 0.002 * z_depth
                 sx = mx + fo; sy = my + fo
                 
                 pts = np.stack([sx*450 + w/2 + off_x, sy*450 + h/2 + off_y], axis=1).astype(np.int32)
                 
-                # Fiber color (bright and sharp)
-                intensity = params['exposure'] * s_rng.uniform(1.0, 2.0)
-                thick = max(1, int(params['width_scale'] * s_rng.uniform(0.5, 1.2)))
+                # Fiber color
+                intensity = params['exposure'] * s_rng.uniform(1.2, 2.0)
+                # Keep thickness minimal
+                thick = 1
                 
                 cv2.polylines(temp, [pts], False, np.array(c) * intensity, thickness=thick, lineType=cv2.LINE_AA)
                 
-                # Draw "Head" (Tip of light) for animation
                 if params['mode'] == "Animated Loop" and len(pts) > 5:
-                     cv2.polylines(temp, [pts[-10:]], False, (2,2,2), thickness=thick+2, lineType=cv2.LINE_AA)
+                     cv2.polylines(temp, [pts[-10:]], False, (2,2,2), thickness=2, lineType=cv2.LINE_AA)
 
         buffer += temp
 
     # --- POST ---
     if params['glow'] > 0:
-        bloom = gaussian_filter(buffer, sigma=params['glow'] * 8)
-        buffer += bloom * 0.5
+        # Tighter glow for sharper look
+        bloom = gaussian_filter(buffer, sigma=params['glow'] * 6)
+        buffer += bloom * 0.4
         
     if params['aberration'] > 0:
         s = int(params['aberration'])
@@ -190,22 +193,24 @@ with st.sidebar:
     
     col1, col2 = st.columns(2)
     with col1:
-        num_strokes = st.number_input("Light Sources", 1, 15, 8)
+        num_strokes = st.number_input("Light Sources", 1, 15, 10)
     with col2:
-        scale = st.slider("Zoom", 0.5, 1.5, 0.9)
+        # Reduced default zoom for "distant" look
+        scale = st.slider("Zoom", 0.5, 1.5, 0.8)
         
     st.divider()
     st.header("Light Physics")
     complexity = st.slider("Complexity", 1, 4, 2)
-    width_scale = st.slider("Tool Width", 0.5, 5.0, 1.5, help="Controls the width of ribbons and thickness of fibers.")
+    # Reduced default width scale
+    width_scale = st.slider("Tool Width", 0.5, 3.0, 1.0, help="Scales ribbon width.")
     spread = st.slider("Fiber Spread", 0.5, 4.0, 1.5)
-    exposure = st.slider("Exposure", 0.1, 2.0, 0.6)
+    exposure = st.slider("Exposure", 0.1, 2.0, 0.7)
     
     with st.expander("Lens Optics"):
-        aberration = st.slider("Prism Shift", 0.0, 10.0, 4.0)
+        aberration = st.slider("Prism Shift", 0.0, 10.0, 3.0)
         glow = st.slider("Glow", 0.0, 3.0, 1.0)
     
-    seed = st.number_input("Seed", step=1, value=42)
+    seed = st.number_input("Seed", step=1, value=999)
     gen = st.button("EXPOSE FILM", type="primary", use_container_width=True)
 
 main = st.empty()
