@@ -57,14 +57,25 @@ def get_smooth_spine(complexity, seed, scale_factor, aspect_ratio):
 
 # --- PALETTE DEFINITIONS ---
 PALETTES = {
+    "RGB Chaos": {
+        # Pure, saturated colors for maximum pop
+        "ribbons": [
+            (0.0, 0.0, 1.0), # Pure Blue
+            (0.0, 1.0, 0.0), # Pure Green
+            (1.0, 0.0, 0.0), # Pure Red
+            (0.0, 1.0, 1.0), # Cyan
+            (1.0, 0.0, 1.0), # Magenta
+            (1.0, 1.0, 0.0)  # Yellow
+        ],
+        "clusters": [
+            (0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 0.0), # CMY
+            (1.0, 0.5, 0.0), # Orange
+            (0.5, 0.0, 1.0)  # Violet
+        ],
+    },
     "Gorospe Gold/Ice": {
         "ribbons": [(0.0, 0.6, 1.0), (0.0, 0.8, 1.0), (0.1, 0.4, 0.9)], 
         "clusters": [(0.95, 0.95, 1.0), (0.9, 1.0, 1.0)], 
-    },
-    "RGB Chaos": {
-        # Pure, saturated primary and secondary colors for maximum vibrancy
-        "ribbons": [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0)],
-        "clusters": [(0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 0.0), (1.0, 0.5, 0.0), (0.5, 0.0, 1.0)],
     },
     "Neon Cyber": {
         "ribbons": [(1.0, 0.2, 0.0), (0.8, 0.0, 1.0)], 
@@ -90,12 +101,24 @@ def render_frame(params, prog):
     if params['mode'] == "Still Light":
         t_start = 0.0
         t_end = 1.0
+        global_alpha = 1.0
     else:
         trail_len = params['trail_len']
-        effective_prog = prog * (1.0 + trail_len * 0.5) 
+        
+        # We extend the timeline slightly to allow for a full "fade out" loop
+        # The head travels 0->1. The tail travels 0->1 (delayed).
+        effective_prog = prog * (1.0 + trail_len * 0.2) # Slight over-run
+        
         t_end = min(1.0, effective_prog)
         t_start = max(0.0, effective_prog - trail_len)
-        if t_start >= 1.0: t_start = 0.999; t_end = 1.0 
+        
+        # Loop Fade Logic
+        # If trail_len is 1.0, we rely on global alpha to fade the whole image at the end
+        # so it loops seamlessly to black.
+        global_alpha = 1.0
+        if prog > 0.85: # Start fading earlier for smoother loop
+            global_alpha = 1.0 - ((prog - 0.85) * 6.66)
+            if global_alpha < 0: global_alpha = 0
 
     layers = [] 
 
@@ -106,7 +129,17 @@ def render_frame(params, prog):
         
         fx, fy, fnx, fny, t_vals = get_smooth_spine(params['complexity'], s_seed, params['scale'] * (1.0/z_depth), params['ar_val'])
         
-        mask = (t_vals >= t_start) & (t_vals <= t_end)
+        # --- EASED FALL-OFF LOGIC ---
+        # Instead of a hard t_start, we allow the stroke to exist slightly behind t_start
+        # but only for specific bristles.
+        # This is handled per-bristle below.
+        
+        # Get the 'maximum' possible extent first
+        # We grab a slightly larger slice to allow for the "ragged tail"
+        ragged_tail_len = 0.1 # 10% variance in tail length
+        safe_start = max(0.0, t_start - ragged_tail_len)
+        
+        mask = (t_vals >= safe_start) & (t_vals <= t_end)
         if np.sum(mask) < 2: continue
         
         mx, my = fx[mask], fy[mask]
@@ -121,35 +154,53 @@ def render_frame(params, prog):
         
         if is_ribbon:
             # === SCATTER RIBBON ===
-            num_bristles = 35 # Increased bristle count for denser, more vibrant ribbons
+            # Increased bristle count for density
+            num_bristles = 40 
             twist_freq = s_rng.uniform(3.0, 8.0)
             twist_phase = s_rng.uniform(0, 2*np.pi)
             twist = np.abs(np.sin(ct * twist_freq + twist_phase))
             
             base_col = np.array(palette["ribbons"][s_rng.randint(0, len(palette["ribbons"]))]) * params['exposure']
             
-            # Higher intensity multiplier for ribbons for more color saturation
-            ribbon_intensity = 0.7 if params['palette'] == "RGB Chaos" else 0.4
-
+            # Boost intensity for RGB Chaos
+            if params['palette'] == "RGB Chaos": base_col *= 1.5
+            
             for b in range(num_bristles):
-                # Significantly increased width multiplier for much wider ribbons
+                # --- DRAMATIC WIDTH DIVERSITY ---
+                # We massively increased the multiplier here (from 12.0 to 35.0)
+                # This allows ribbons to get VERY wide when they twist flat.
                 scatter_amount = s_rng.normal(0, 0.5) * params['width_scale'] * 35.0
                 current_offset = scatter_amount * twist
                 
                 bx = mx + nx * (current_offset * 0.002)
                 by = my + ny * (current_offset * 0.002)
-                thick = max(1, int(s_rng.uniform(0.5, 2.5)))
+                thick = max(1, int(s_rng.uniform(0.5, 3.0)))
                 
                 px = bx*(h*0.4) + w/2 + off_x
                 py = by*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
                 
-                cv2.polylines(stroke_layer, [pts], False, base_col * ribbon_intensity, thickness=thick, lineType=cv2.LINE_AA)
+                # --- SOFT TAIL (Eased Fall-off) ---
+                # Each bristle has a randomized start point.
+                # Some start exactly at t_start, some start slightly earlier (lag behind), 
+                # creating a feathered tail.
+                bristle_lag = s_rng.uniform(0.0, ragged_tail_len)
+                actual_start = t_start - bristle_lag
+                
+                # We need to slice the points array 'pts' to match this bristle's specific lifespan
+                # 'ct' is the time array for the whole chunk.
+                bristle_mask = ct >= actual_start
+                if np.sum(bristle_mask) < 2: continue
+                
+                visible_pts = pts[bristle_mask]
+                
+                cv2.polylines(stroke_layer, [visible_pts], False, base_col * 0.4, thickness=thick, lineType=cv2.LINE_AA)
 
         else:
             # === SCATTER CLUSTER ===
-            num_fibers = s_rng.randint(5, 10)
+            num_fibers = s_rng.randint(6, 12)
             base_col = np.array(palette["clusters"][s_rng.randint(0, len(palette["clusters"]))]) * params['exposure']
+            if params['palette'] == "RGB Chaos": base_col *= 1.3
             
             for f in range(num_fibers):
                 fo = s_rng.normal(0, 1.0) * params['spread'] * 0.002
@@ -158,14 +209,19 @@ def render_frame(params, prog):
                 py = sy*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
                 
-                # Keep clusters thin for contrast with wide ribbons
+                # Soft tail logic for clusters too
+                bristle_lag = s_rng.uniform(0.0, ragged_tail_len)
+                actual_start = t_start - bristle_lag
+                bristle_mask = ct >= actual_start
+                if np.sum(bristle_mask) < 2: continue
+                visible_pts = pts[bristle_mask]
+                
                 thick = 1 if s_rng.rand() > 0.3 else 2
-                # High intensity for sharp, bright lines
-                cv2.polylines(stroke_layer, [pts], False, base_col * 1.5, thickness=thick, lineType=cv2.LINE_AA)
+                cv2.polylines(stroke_layer, [visible_pts], False, base_col * 1.5, thickness=thick, lineType=cv2.LINE_AA)
                 
                 # DRAW TIP
-                if params['mode'] == "Animated Loop" and len(pts) > 2:
-                    tip_pt = pts[-1:] 
+                if params['mode'] == "Animated Loop" and len(visible_pts) > 2:
+                    tip_pt = visible_pts[-1:] 
                     cv2.circle(stroke_layer, tuple(tip_pt[0]), thick+2, (1.0, 1.0, 1.0), -1)
 
         layers.append((z_depth, stroke_layer))
@@ -189,6 +245,7 @@ def render_frame(params, prog):
             buffer[:, :-s, 0] = buffer[:, s:, 0]
             buffer[:, s:, 2] = buffer[:, :-s, 2]
             
+    buffer *= global_alpha
     return np.clip(buffer, 0, 1.0) * 255
 
 # --- UI HANDLERS ---
@@ -205,7 +262,7 @@ def restore_settings(meta):
     st.session_state['mode'] = meta['mode']
     st.session_state['pal'] = meta['palette']
     st.session_state['dof'] = meta['dof']
-    st.session_state['trail_len'] = meta.get('trail_len', 0.3)
+    st.session_state['trail_len'] = meta.get('trail_len', 0.6)
     st.session_state['ar_select'] = meta['ar_name']
 
 def delete_item(idx):
@@ -224,22 +281,27 @@ with st.sidebar:
 
     if mode == "Animated Loop":
         st.subheader("Animation Physics")
-        trail_len = st.slider("Trail Duration", 0.1, 1.0, 0.4, key="trail_len", help="Short = Comet, Long = Exposure.")
+        # Default trail length increased for better loops
+        trail_len = st.slider("Trail Duration", 0.1, 1.0, 0.6, key="trail_len", help="1.0 = Full persistence loop.")
     else:
         trail_len = 1.0 
 
     st.divider()
     
     st.header("2. Art Direction")
-    palette = st.selectbox("Color Palette", list(PALETTES.keys()), key="pal")
+    # UPDATED DEFAULT: RGB Chaos
+    palette = st.selectbox("Color Palette", list(PALETTES.keys()), index=0, key="pal") 
     scale = st.slider("Zoom", 0.5, 1.5, 0.85, key="scale")
-    num_strokes = st.number_input("Light Sources", 1, 30, 12, key="num_strokes")
+    # UPDATED DEFAULT: 15 Strokes
+    num_strokes = st.number_input("Light Sources", 1, 30, 15, key="num_strokes") 
 
     st.divider()
     
     st.header("3. Brush Physics")
-    complexity = st.slider("Gesture Complexity", 1, 4, 2, key="complexity")
-    width_scale = st.slider("Scatter Width", 0.1, 3.0, 1.0, key="width_scale")
+    # UPDATED DEFAULT: Higher Complexity (3)
+    complexity = st.slider("Gesture Complexity", 1, 4, 3, key="complexity") 
+    # UPDATED DEFAULT: Wider Scatter (1.5)
+    width_scale = st.slider("Scatter Width", 0.1, 3.0, 1.5, key="width_scale")
     spread = st.slider("Cluster Spread", 0.1, 3.0, 1.0, key="spread")
     
     st.divider()
@@ -276,10 +338,12 @@ if gen:
             fmt = "png"
         else:
             frames = []
-            for i in range(60):
-                res = render_frame(p, i/60)
+            # INCREASED FRAMES to 90 for smoother, longer animation
+            total_frames = 90
+            for i in range(total_frames):
+                res = render_frame(p, i/total_frames)
                 frames.append(cv2.cvtColor(res.astype(np.uint8), cv2.COLOR_BGR2RGB))
-                bar.progress((i+1)/60)
+                bar.progress((i+1)/total_frames)
             b = io.BytesIO()
             imageio.mimsave(b, frames, format='GIF', fps=30, loop=0)
             data = b.getvalue()
