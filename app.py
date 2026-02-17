@@ -54,22 +54,18 @@ PALETTES = {
     "Gorospe Gold/Ice": {
         "ribbons": [(0.05, 0.5, 1.0), (0.0, 0.7, 1.0), (0.1, 0.3, 0.9)], # Warm Ambers/Gold
         "clusters": [(1.0, 1.0, 1.0), (0.9, 0.9, 1.0), (0.8, 0.8, 1.0)], # Cool Whites
-        "bg_darkness": 0.0
     },
     "Electric Neon": {
         "ribbons": [(1.0, 0.2, 0.0), (1.0, 0.0, 0.5), (0.8, 0.0, 1.0)], # Blue/Purple/Cyan
         "clusters": [(1.0, 1.0, 0.0), (0.0, 1.0, 0.0), (0.0, 1.0, 1.0)], # Cyan/Green
-        "bg_darkness": 0.0
     },
     "Tungsten Wire": {
         "ribbons": [(0.1, 0.2, 0.8), (0.1, 0.1, 0.6), (0.3, 0.4, 0.9)], # Deep Oranges/Browns
         "clusters": [(0.5, 0.6, 1.0), (0.4, 0.4, 0.9), (0.8, 0.8, 0.8)], # Warm Whites
-        "bg_darkness": 0.0
     },
     "Prism Minimal": {
         "ribbons": [(0.9, 0.9, 0.9), (0.8, 0.8, 0.8)], # White/Grey
         "clusters": [(1.0, 1.0, 1.0)], # Pure White
-        "bg_darkness": 0.0
     }
 }
 
@@ -103,8 +99,8 @@ def render_frame(params, prog):
         ct = t_vals[mask]
         
         # 3. Tool Selection (Ribbon vs Cluster)
-        # 40% chance of ribbon, 60% chance of fiber cluster
-        is_ribbon = s_rng.rand() < 0.4
+        # 50/50 split
+        is_ribbon = s_rng.rand() < 0.5
         
         # Offset position slightly
         off_x = s_rng.uniform(-0.1, 0.1) * 500
@@ -121,8 +117,9 @@ def render_frame(params, prog):
             twist_phase = s_rng.uniform(0, 2*np.pi)
             twist = np.abs(np.sin(ct * twist_freq + twist_phase))
             
-            # SCALING FIX: Much narrower base width (5.0 instead of 30.0)
-            base_w = 5.0 * params['width_scale']
+            # --- THE FIX: Reduced Base Width ---
+            # Reduced from 5.0 to 1.5 to make ribbons elegant and thin
+            base_w = 1.5 * params['width_scale']
             width = (twist * base_w) + 1.0 # Minimum 1px width
             
             # Geometry
@@ -200,7 +197,7 @@ with st.sidebar:
     st.divider()
     st.header("Light Physics")
     complexity = st.slider("Complexity", 1, 4, 2)
-    width_scale = st.slider("Tool Width", 0.5, 3.0, 1.0, help="Scales ribbon width and fiber thickness.")
+    width_scale = st.slider("Tool Width", 0.5, 5.0, 1.5, help="Controls the width of ribbons and thickness of fibers.")
     spread = st.slider("Fiber Spread", 0.5, 4.0, 1.5)
     exposure = st.slider("Exposure", 0.1, 2.0, 0.6)
     
