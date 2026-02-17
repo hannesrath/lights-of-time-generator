@@ -21,12 +21,11 @@ st.markdown("""
 
 if 'history' not in st.session_state: st.session_state.history = []
 
-# --- MATH ENGINE ---
+# --- MATH HELPERS ---
 
 def get_centered_spine(complexity, seed, scale_factor):
-    """Generates a static, centered master path (0 to 1)."""
+    """Generates the master path center-lines."""
     rng = np.random.RandomState(seed)
-    # We generate fixed points so the shape doesn't wiggle during draw-on
     t = np.linspace(0, 1, 4000) 
     x, y = np.zeros_like(t), np.zeros_like(t)
     
@@ -34,113 +33,132 @@ def get_centered_spine(complexity, seed, scale_factor):
         freq = rng.uniform(0.1, 0.4) * i 
         amp = rng.uniform(0.5, 1.2) / (i**0.5)
         phase = rng.uniform(0, 2*np.pi)
-        
         x += amp * np.cos(freq * t * 2 * np.pi + phase)
         y += amp * np.sin(freq * t * 1.5 * np.pi + phase * 0.5)
         
-    # Center and Scale
     x = (x - np.mean(x)) * scale_factor
     y = (y - np.mean(y)) * scale_factor
-    
     return x, y, t
 
-def render_write_on_frame(params, prog):
+def get_path_normals(x, y):
+    """Calculates perpendicular vectors for ribbon width."""
+    dx = np.gradient(x)
+    dy = np.gradient(y)
+    dist = np.sqrt(dx**2 + dy**2) + 1e-6
+    nx = -dy / dist
+    ny = dx / dist
+    return nx, ny
+
+# --- MAIN RENDERER (HYBRID TOOL ENGINE) ---
+
+def render_hybrid_frame(params, prog):
     w, h = 1080, 1080
     accumulation_buffer = np.zeros((h, w, 3), dtype=np.float32)
     rng = np.random.RandomState(params['seed'])
     
-    # PALETTES
-    palettes = {
-        "Gorospe Classic": [(0.05, 0.6, 1.0), (0.9, 0.95, 1.0), (1.0, 0.4, 0.0)],
-        "Neon Cyber": [(0.5, 0.0, 1.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
-        "Warm Tungsten": [(0.1, 0.4, 1.0), (0.2, 0.2, 1.0), (0.8, 0.9, 1.0)],
-        "Deep Ocean": [(1.0, 0.5, 0.0), (0.8, 0.8, 0.0), (0.8, 0.2, 0.4)]
-    }
-    current_palette = palettes.get(params['palette_name'], palettes["Gorospe Classic"])
+    # Define distinct palettes for different tools
+    ribbon_palette = [(0.05, 0.5, 1.0), (0.0, 0.8, 1.0), (0.2, 0.4, 0.8)] # Gold/Amber
+    cluster_palette = [(1.0, 1.0, 1.0), (0.9, 0.9, 1.0), (1.0, 0.8, 0.4)] # White/Cool Blue
     
-    # LOOP LOGIC (Fade out at the very end to loop smoothly)
-    # If prog is > 0.95, we fade the whole image to black
+    # Animation Logic
     global_alpha = 1.0
-    if params['mode'] == "Animated Loop":
-        if prog > 0.9:
-            global_alpha = 1.0 - ((prog - 0.9) * 10.0) # Fade out in last 10%
-    
-    # Draw limits based on progress
-    # In 'Still' mode, we draw 100%. In 'Animated', we draw up to 'prog'.
+    if params['mode'] == "Animated Loop" and prog > 0.9:
+        global_alpha = 1.0 - ((prog - 0.9) * 10.0)
     draw_limit = 1.0 if params['mode'] == "Still Light" else prog
-    
-    # Avoid drawing nothing at frame 0
-    if draw_limit < 0.001: draw_limit = 0.001
+    if draw_limit < 0.002: draw_limit = 0.002
 
     # --- MULTI-STROKE LOOP ---
     for s_idx in range(params['num_strokes']):
         stroke_seed = params['seed'] + (s_idx * 500)
+        s_rng = np.random.RandomState(stroke_seed)
         
-        # Get the FULL path first
-        full_mx, full_my, t_vals = get_centered_spine(params['complexity'], stroke_seed, params['scale'] * rng.uniform(0.8, 1.2))
+        # 1. Generate Full Path
+        full_mx, full_my, t_vals = get_centered_spine(params['complexity'], stroke_seed, params['scale'] * s_rng.uniform(0.9, 1.1))
         
-        # SLICE THE PATH based on progress
-        # We only take points where t <= draw_limit
+        # 2. Slice Path based on animation progress
         mask = t_vals <= draw_limit
-        if np.sum(mask) < 2: continue # Skip if not enough points yet
+        if np.sum(mask) < 5: continue
         
-        mx = full_mx[mask]
-        my = full_my[mask]
+        mx, my = full_mx[mask], full_my[mask]
         current_t = t_vals[mask]
         
-        # Dominant Color for this stroke
-        dominant_color = current_palette[rng.randint(0, len(current_palette))]
+        # Position Offset
+        off_x = s_rng.uniform(-0.1, 0.1) * 500
+        off_y = s_rng.uniform(-0.1, 0.1) * 500
         
-        # Position Offset (Center the composition)
-        stroke_offset_x = rng.uniform(-0.15, 0.15) * 500
-        stroke_offset_y = rng.uniform(-0.15, 0.15) * 500
+        temp_layer = np.zeros((h, w, 3), dtype=np.float32)
         
-        # --- FIBER BUNDLE ---
-        stroke_strands = 40
-        for i in range(stroke_strands):
-            # Fiber Color
-            base_c = dominant_color if rng.rand() > 0.3 else current_palette[rng.randint(0, len(current_palette))]
-            if rng.rand() > 0.6: base_c = (0.98, 0.98, 0.98) # White highlights
+        # DECIDE TOOL TYPE FOR THIS STROKE
+        # 40% chance of Ribbon, 60% chance of Fiber Cluster
+        tool_type = "ribbon" if s_rng.rand() < 0.4 else "cluster"
+        
+        if tool_type == "ribbon":
+            # === TOOL A: THE GOLDEN RIBBON ===
+            # Wide, variable thickness based on twist
             
-            # Fiber Offset (Breathing)
-            # We calculate this for the *current slice* of t
-            offset_phase = rng.uniform(0, 2*np.pi)
-            offset_freq = rng.uniform(1.0, 3.0)
+            # Calculate normals for width expansion
+            nx, ny = get_path_normals(mx, my)
             
-            dist = np.sin(current_t * offset_freq + offset_phase) * params['spread'] * 0.08
+            # Twist math: varies width from thick to thin
+            twist_freq = s_rng.uniform(2.0, 5.0)
+            twist_phase = s_rng.uniform(0, 2*np.pi)
+            # Width factor goes from 0.1 (thin edge) to 1.0 (flat face)
+            twist = np.abs(np.sin(current_t * twist_freq + twist_phase)) * 0.9 + 0.1
             
-            # Calculate path for this fiber
-            sx = mx + np.cos(current_t * 5.0 + offset_phase) * dist
-            sy = my + np.sin(current_t * 5.0 + offset_phase) * dist
+            current_width = twist * params['spread'] * 30.0 * params['line_weight']
             
-            px = sx * 450 + (w/2) + stroke_offset_x
-            py = sy * 450 + (h/2) + stroke_offset_y
+            # Construct Polygon strip
+            lx = mx + nx * (current_width / 2.0)
+            ly = my + ny * (current_width / 2.0)
+            rx = mx - nx * (current_width / 2.0)
+            ry = my - ny * (current_width / 2.0)
             
-            pts = np.stack([px, py], axis=1).astype(np.int32)
+            px_l = lx * 450 + (w/2) + off_x
+            py_l = ly * 450 + (h/2) + off_y
+            px_r = rx * 450 + (w/2) + off_x
+            py_r = ry * 450 + (h/2) + off_y
             
-            # DRAWING
-            temp_layer = np.zeros((h, w, 3), dtype=np.float32)
-            intensity = params['exposure'] * rng.uniform(0.6, 1.2)
-            thick = 1 if rng.rand() > 0.3 else 2
+            pts_l = np.stack([px_l, py_l], axis=1)
+            pts_r = np.stack([px_r, py_r], axis=1)[::-1]
+            poly = np.concatenate([pts_l, pts_r]).astype(np.int32)
             
-            # 1. DRAW THE TRAIL
-            color = np.array(base_c) * intensity
-            cv2.polylines(temp_layer, [pts], False, color, thickness=thick, lineType=cv2.LINE_AA)
+            # Color & Draw
+            base_c = ribbon_palette[s_rng.randint(0, len(ribbon_palette))]
+            intensity = params['exposure'] * s_rng.uniform(0.3, 0.6) # Ribbons are dimmer
+            cv2.fillPoly(temp_layer, [poly], np.array(base_c) * intensity, lineType=cv2.LINE_AA)
             
-            # 2. DRAW THE "TIP" (The Light Source)
-            # Only in animation mode: make the end of the line brighter
-            if params['mode'] == "Animated Loop" and len(pts) > 1:
-                # Get the last few points (the "head")
-                head_pts = pts[-15:] 
-                # Draw white-hot tip
-                cv2.polylines(temp_layer, [head_pts], False, (2.0, 2.0, 2.0), thickness=thick+2, lineType=cv2.LINE_AA)
+        else:
+            # === TOOL B: THE FIBER CLUSTER ===
+            # Thin, bright, parallel strands
+            
+            num_fibers = s_rng.randint(3, 8)
+            base_c = cluster_palette[s_rng.randint(0, len(cluster_palette))]
+            
+            for f_idx in range(num_fibers):
+                # slight parallel offset
+                fiber_off = (f_idx - num_fibers/2) * params['spread'] * 0.005
                 
-            accumulation_buffer += temp_layer
+                sx = mx + fiber_off
+                sy = my + fiber_off
+                
+                px = sx * 450 + (w/2) + off_x
+                py = sy * 450 + (h/2) + off_y
+                pts = np.stack([px, py], axis=1).astype(np.int32)
+                
+                # Color & Draw
+                # Clusters are brighter and thinner
+                intensity = params['exposure'] * s_rng.uniform(0.8, 1.5)
+                thick = max(1, int(params['line_weight'] * s_rng.uniform(1.0, 2.5)))
+                
+                cv2.polylines(temp_layer, [pts], False, np.array(base_c) * intensity, thickness=thick, lineType=cv2.LINE_AA)
+
+        # Add this stroke to master buffer
+        accumulation_buffer += temp_layer
 
     # --- POST PROCESSING ---
     if params['glow'] > 0:
-        bloom = gaussian_filter(accumulation_buffer, sigma=params['glow'] * 10)
-        accumulation_buffer += bloom * 0.4
+        bloom = gaussian_filter(accumulation_buffer, sigma=params['glow'] * 12)
+        accumulation_buffer += bloom * 0.5
 
     if params['aberration'] > 0:
         shift = int(params['aberration'])
@@ -151,39 +169,37 @@ def render_write_on_frame(params, prog):
     if params['blur'] > 0:
         accumulation_buffer = gaussian_filter(accumulation_buffer, sigma=params['blur'])
         
-    # Apply Global Alpha (Fade out at end of loop)
     accumulation_buffer *= global_alpha
-        
     final_image = np.clip(accumulation_buffer, 0, 1.0) * 255
     return final_image.astype(np.uint8)
 
 # --- UI ---
-st.title("🔦 Lights of Time: Multi-Stroke Studio")
+st.title("🔦 Lights of Time: Hybrid Studio")
 
 with st.sidebar:
     st.header("Composition")
-    mode = st.radio("Mode", ["Still Light", "Animated Loop"], key="mode", help="Animated Loop creates a 'Write-On' effect.")
-    palette_name = st.selectbox("Color Palette", ["Gorospe Classic", "Neon Cyber", "Warm Tungsten", "Deep Ocean"], key="pal")
+    mode = st.radio("Mode", ["Still Light", "Animated Loop"], key="mode")
     
     col1, col2 = st.columns(2)
     with col1:
-        num_strokes = st.number_input("Light Sources", 1, 10, 3, help="Number of separate light paths.")
+        num_strokes = st.number_input("Light Sources", 1, 8, 5, help="Distinct light tools.")
     with col2:
-        scale = st.slider("Zoom", 0.5, 2.0, 1.1, help="Scale of the light paths.")
+        scale = st.slider("Zoom", 0.5, 1.5, 0.9)
         
     st.divider()
     
     st.header("Physics")
-    complexity = st.slider("Curve Complexity", 1, 4, value=2)
-    spread = st.slider("Fiber Spread", 0.5, 4.0, value=1.5)
-    exposure = st.slider("Exposure", 0.05, 0.8, value=0.25)
+    complexity = st.slider("Gesture Complexity", 1, 4, value=2)
+    line_weight = st.slider("Base Thickness", 0.5, 3.0, value=1.5, help="Scales both ribbons and fibers.")
+    spread = st.slider("Tool Width/Spread", 0.5, 4.0, value=2.0, help="Width of ribbons, tightness of clusters.")
+    exposure = st.slider("Exposure", 0.1, 1.0, value=0.4)
     
-    with st.expander("Lens Optics"):
-        aberration = st.slider("Prism Shift", 0.0, 10.0, value=3.0)
-        glow = st.slider("Glow Amount", 0.0, 3.0, value=1.0)
-        blur = st.slider("Softness", 0.0, 3.0, value=0.6)
+    with st.expander("Optics"):
+        aberration = st.slider("Prism Shift", 0.0, 10.0, value=5.0)
+        glow = st.slider("Glow Amount", 0.0, 3.0, value=1.2)
+        blur = st.slider("Softness", 0.0, 3.0, value=0.7)
     
-    seed = st.number_input("Seed", step=1, value=101)
+    seed = st.number_input("Seed", step=1, value=888)
     gen_btn = st.button("EXPOSE FILM", type="primary", use_container_width=True)
 
 preview = st.empty()
@@ -193,23 +209,21 @@ if gen_btn:
         "seed": seed, "complexity": complexity, "exposure": exposure,
         "glow": glow, "aberration": aberration, "spread": spread,
         "blur": blur, "num_strokes": num_strokes, "scale": scale,
-        "palette_name": palette_name, "mode": mode
+        "line_weight": line_weight, "mode": mode
     }
     
     with preview.container():
-        bar = st.progress(0, text="Integrating Light Paths...")
+        bar = st.progress(0, text="Integrating Light Tools...")
         if mode == "Still Light":
-            img_bgr = render_write_on_frame(params, 1.0)
+            img_bgr = render_hybrid_frame(params, 1.0)
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             st.image(img_rgb, use_container_width=True)
             is_success, buffer = cv2.imencode(".png", img_bgr)
             data = buffer.tobytes()
         else:
             frames = []
-            # Generate 60 frames for the write-on
             for i in range(60):
-                prog = i / 60.0
-                f_bgr = render_write_on_frame(params, prog)
+                f_bgr = render_hybrid_frame(params, i/60)
                 frames.append(cv2.cvtColor(f_bgr, cv2.COLOR_BGR2RGB))
                 bar.progress((i+1)/60)
             b = io.BytesIO()
