@@ -16,7 +16,7 @@ st.markdown("""
     .stApp { background-color: #000000 !important; color: #e0e0e0 !important; }
     [data-testid="stSidebar"] { background-color: #0a0a0a !important; border-right: 1px solid #222; }
     .hero-container {
-        border-radius: 0px; overflow: hidden; border: 1px solid #333;
+        border-radius: 12px; overflow: hidden; border: 1px solid #333;
         margin-top: 1rem; margin-bottom: 2rem; background-color: #000;
         display: flex; align-items: center; justify-content: center;
     }
@@ -27,138 +27,135 @@ st.markdown("""
 # --- SESSION STATE ---
 if 'history' not in st.session_state: st.session_state.history = []
 
-# --- RIBBON PATH MATH ---
-def get_ribbon_path(complexity, seed, prog):
-    """Generates the 'Master Spine' of the ribbon."""
+# --- MATH ENGINE ---
+def get_ribbon_spine(complexity, seed, prog):
+    """Generates the master path for the ribbon."""
     rng = np.random.RandomState(seed)
-    t = np.linspace(0, 1, 3000)
+    t = np.linspace(0, 1, 4000) # High point count for smooth curves
     x, y = np.zeros_like(t), np.zeros_like(t)
     
-    # Low frequency, high amplitude for "Sweeping" gestures
+    # Jaime Gorospe style: Low frequency sweeping arcs
     for i in range(1, complexity + 1):
         freq = rng.uniform(0.1, 0.4) * i
-        amp = rng.uniform(0.8, 1.4) / (i**0.6)
+        amp = rng.uniform(0.8, 1.5) / (i**0.6)
         phase = rng.uniform(0, 2*np.pi) + (prog * 2 * np.pi)
         
         x += amp * np.cos(freq * t * 2 * np.pi + phase)
         y += amp * np.sin(freq * t * 1.5 * np.pi + phase * 0.5)
         
-    return x, y
+    return x, y, t
 
-def render_ribbon_frame(complexity, seed, exposure, glow, aberration, tool_width, blur, prog):
+def render_ribbon_tool(complexity, seed, exposure, glow, aberration, tool_width, twist_speed, blur, prog):
     w, h = 1080, 1080
-    # FLOAT32 is critical for bright light accumulation
+    # Canvas is float32 to accumulate light, but we will draw with 0-255 values
     canvas = np.zeros((h, w, 3), dtype=np.float32)
     
-    # --- THE "TOOL HEAD" DEFINITION ---
-    # We define the physical tool as a list of emitters attached to the master spine.
-    # Structure: (Offset_Multiplier, Color_RGB, Thickness_Px, Intensity_Mult)
+    # 1. GENERATE MASTER SPINE
+    mx, my, t_vals = get_ribbon_spine(complexity, seed, prog)
     
-    # This "Gorospe Tool" has a wide Warm strip, a bright White core, and a Cool edge.
-    tool_emitters = [
-        # 1. The Wide Amber/Gold Backing (The "Ribbon Body")
-        {'offset': 0.0, 'color': np.array([1.0, 0.6, 0.05]), 'width': 25.0, 'int': 0.8},
-        
-        # 2. The Bright White Core (The "Hot filament")
-        {'offset': 0.0, 'color': np.array([1.0, 0.9, 0.8]), 'width': 6.0, 'int': 2.5},
-        
-        # 3. The Cyan Edge (Parallel detail line)
-        {'offset': 0.6, 'color': np.array([0.0, 0.8, 1.0]), 'width': 4.0, 'int': 1.5},
-        
-        # 4. The Thin Blue Guard (Parallel detail line on other side)
-        {'offset': -0.5, 'color': np.array([0.1, 0.2, 1.0]), 'width': 3.0, 'int': 1.2}
+    # 2. DEFINE THE PHYSICAL TOOL (The "Brush")
+    # This defines the stripes seen in the reference: Amber body, White core, Blue edge.
+    # Colors are BGR (Blue, Green, Red) for OpenCV
+    emitters = [
+        # Wide Amber Body
+        {'offset': 0.0, 'color': (5, 120, 255), 'width': 30, 'alpha': 0.6}, 
+        # Bright White Core
+        {'offset': 0.1, 'color': (200, 255, 255), 'width': 8, 'alpha': 1.0},
+        # Cyan Edge Detail
+        {'offset': 0.6, 'color': (255, 200, 0), 'width': 4, 'alpha': 0.9},
+        # Deep Blue Under-glow
+        {'offset': -0.5, 'color': (255, 50, 0), 'width': 4, 'alpha': 0.8}
     ]
-
-    master_x, master_y = get_ribbon_path(complexity, seed, prog)
-
-    for emitter in tool_emitters:
-        # Calculate Parallel Offset
-        # We simulate ribbon width by offsetting X/Y slightly based on the emitter's position on the tool
-        # Ideally we'd use normals, but a simple linear offset creates the cool "twisting" artifacts seen in light painting
+    
+    # 3. CALCULATE TWIST (Simulates hand rotation)
+    # The ribbon gets wider and narrower as it twists along the path
+    twist = np.sin(t_vals * np.pi * twist_speed + (prog*np.pi)) 
+    
+    for emitter in emitters:
+        # Calculate the parallel offset based on the twist
+        # When twist is 0, the ribbon is "sideways" (thin). When 1, it's "flat" (wide).
+        current_offset = emitter['offset'] * tool_width * 20.0 * twist
         
-        off_x = emitter['offset'] * tool_width * 15.0
-        off_y = emitter['offset'] * tool_width * 15.0 * 0.5 # Isometric skew
+        # Apply offset to master path
+        ex = mx * 380 + (w/2) + current_offset
+        ey = my * 380 + (h/2) + (current_offset * 0.5) # Slight skew for 3D feel
         
-        path_x = master_x * 380 + (w/2) + off_x
-        path_y = master_y * 380 + (h/2) + off_y
+        pts = np.stack([ex, ey], axis=1).astype(np.int32)
         
-        points = np.stack([path_x, path_y], axis=1).astype(np.int32)
+        # COLOR MATH: Scale 0-255 by exposure
+        base_color = np.array(emitter['color']) * exposure * emitter['alpha']
         
-        # Base Color Calculation
-        base_color = emitter['color'] * emitter['int'] * exposure
+        # Draw the solid core of the line
+        cv2.polylines(canvas, [pts], False, base_color, 
+                      thickness=max(1, int(emitter['width'] * abs(twist) * tool_width + 1)), 
+                      lineType=cv2.LINE_AA)
         
-        # 1. DRAW THE MAIN BODY (Solid Light)
-        # Convert to tuple for OpenCV
-        color_tuple = (float(base_color[2]), float(base_color[1]), float(base_color[0])) # BGR order for CV2
-        
-        # We draw multiple times with slight jitter to create "Texture"
-        cv2.polylines(canvas, [points], False, color_tuple, 
-                      thickness=int(emitter['width'] * tool_width), lineType=cv2.LINE_AA)
-        
-        # 2. DRAW THE GLOW (Atmosphere)
+        # Draw the atmospheric glow (Bloom)
         if glow > 0:
-            glow_color = (float(base_color[2]*0.2), float(base_color[1]*0.2), float(base_color[0]*0.2))
-            cv2.polylines(canvas, [points], False, glow_color, 
-                          thickness=int(emitter['width'] * tool_width * 4), lineType=cv2.LINE_AA)
+            cv2.polylines(canvas, [pts], False, base_color * 0.3, 
+                          thickness=int(emitter['width'] * 4 * tool_width), 
+                          lineType=cv2.LINE_AA)
 
-    # --- CHROMATIC ABERRATION (Global Lens Effect) ---
+    # 4. POST-PROCESSING
+    
+    # Chromatic Aberration (Shift Red/Blue channels)
     if aberration > 0:
-        # Shift Red and Blue channels
         shift = int(aberration)
         if shift > 0:
-            # Shift Red Channel left
-            canvas[:, :-shift, 2] = canvas[:, shift:, 2]
-            # Shift Blue Channel right
-            canvas[:, shift:, 0] = canvas[:, :-shift, 0]
+            # Shift Blue channel left, Red channel right
+            canvas_copy = canvas.copy()
+            canvas[:, :-shift, 0] = canvas_copy[:, shift:, 0] # Blue
+            canvas[:, shift:, 2] = canvas_copy[:, :-shift, 2] # Red
 
-    # --- FINAL OPTICS ---
+    # Lens Blur
     if blur > 0:
         canvas = gaussian_filter(canvas, sigma=blur)
         
-    # Tone Map: Compress the HDR values to visible range (0-255)
-    # This prevents the "Dark Image" issue by normalizing bright spots
+    # Tone Mapping: Clamp values to 255 (White)
+    # This ensures "overexposed" areas become pure white instead of wrapping around to black
     canvas = np.clip(canvas, 0, 255).astype(np.uint8)
+    
     return canvas
 
 # --- UI ---
-st.title("🔦 Lights of Time: Ribbon Engine")
+st.title("🔦 Lights of Time: Ribbon Studio")
 
 with st.sidebar:
-    st.header("Tool Settings")
-    mode = st.radio("Output", ["Still Light", "Animated Loop"], key="mode")
+    st.header("Tool Configuration")
+    mode = st.radio("Mode", ["Still Light", "Animated Loop"], key="mode")
     complexity = st.slider("Gesture Complexity", 1, 4, value=2, key="comp")
-    seed = st.number_input("Seed", step=1, value=1024, key="seed")
+    seed = st.number_input("Seed", step=1, value=555, key="seed")
     
-    st.divider()
-    
-    exposure = st.slider("Light Intensity", 1.0, 5.0, value=2.0, help="Brightness of the tool.")
-    tool_width = st.slider("Ribbon Width", 0.5, 4.0, value=1.5, help="Physical width of the light tool.")
-    glow = st.slider("Atmosphere", 0.0, 2.0, value=1.0)
-    aberration = st.slider("Prism Edge", 0.0, 20.0, value=5.0)
-    blur_val = st.slider("Lens Softness", 0.0, 5.0, value=0.5)
-    
-    gen_btn = st.button("PAINT LIGHT", type="primary", use_container_width=True)
+    with st.expander("Light Physics", expanded=True):
+        exposure = st.slider("Brightness", 0.5, 3.0, value=1.2, help="Overall light intensity.")
+        tool_width = st.slider("Ribbon Width", 0.5, 3.0, value=1.0, help="Space between the colored stripes.")
+        twist_speed = st.slider("Twist Rate", 1.0, 10.0, value=3.0, help="How fast the tool rotates.")
+        aberration = st.slider("Prism Shift", 0.0, 10.0, value=4.0)
+        glow = st.slider("Atmosphere", 0.0, 2.0, value=1.0)
+        blur = st.slider("Softness", 0.0, 3.0, value=0.5)
+
+    gen_btn = st.button("PAINT RIBBON", type="primary", use_container_width=True)
 
 preview = st.empty()
 
 if gen_btn:
     with preview.container():
-        bar = st.progress(0, text="Painting Ribbons...")
+        bar = st.progress(0, text="Exposing Sensor...")
         if mode == "Still Light":
-            img = render_ribbon_frame(complexity, seed, exposure, glow, aberration, tool_width, blur_val, 0)
-            # OpenCV uses BGR, Streamlit uses RGB. We generated BGR in engine for CV2 compatibility.
-            # So we convert BGR -> RGB for display
-            rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            st.image(rgb_img, use_container_width=True)
+            # Generate one frame
+            img_bgr = render_ribbon_tool(complexity, seed, exposure, glow, aberration, tool_width, twist_speed, blur, 0)
+            # Convert BGR to RGB for Streamlit display
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            st.image(img_rgb, use_container_width=True)
             
-            # Save format
-            is_success, buffer = cv2.imencode(".png", img) 
+            # Encode PNG for history
+            is_success, buffer = cv2.imencode(".png", img_bgr)
             data = buffer.tobytes()
         else:
             frames = []
             for i in range(60):
-                f = render_ribbon_frame(complexity, seed, exposure, glow, aberration, tool_width, blur_val, i/60)
-                frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+                f_bgr = render_ribbon_tool(complexity, seed, exposure, glow, aberration, tool_width, twist_speed, blur, i/60)
+                frames.append(cv2.cvtColor(f_bgr, cv2.COLOR_BGR2RGB))
                 bar.progress((i+1)/60)
             b = io.BytesIO()
             imageio.mimsave(b, frames, format='GIF', fps=30, loop=0)
@@ -166,3 +163,12 @@ if gen_btn:
             st.image(data, use_container_width=True)
             
         st.session_state.history.insert(0, data)
+
+# GALLERY
+if st.session_state.history:
+    st.divider()
+    cols = st.columns(4)
+    for idx, item in enumerate(st.session_state.history):
+        with cols[idx % 4]:
+            st.image(item, use_container_width=True) 
+            st.download_button("💾", item, f"ribbon_{idx}.png", key=f"dl_{idx}")
