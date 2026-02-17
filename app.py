@@ -19,7 +19,7 @@ st.markdown("""
     .metadata-card { 
         background-color: rgba(255, 255, 255, 0.03); 
         padding: 12px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.08);
-        font-size: 0.8rem; color: #aaa; margin-bottom: 10px; backdrop-filter: blur(5px);
+        font-size: 0.8rem; color: #aaa; margin-bottom: 10px;
     }
     .hero-container {
         border-radius: 15px; overflow: hidden; border: 1px solid #333;
@@ -28,101 +28,114 @@ st.markdown("""
         min-height: 400px;
     }
     h1, h2, h3 { color: #fff !important; font-weight: 700 !important; }
-    div.stButton > button { background-color: #007bff !important; color: white !important; border-radius: 6px !important; }
+    div.stButton > button { background-color: #238636 !important; color: white !important; border-radius: 6px !important; border: none !important; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
+# --- SESSION STATE INITIALIZATION ---
 if 'history' not in st.session_state: st.session_state.history = []
 
-# Widget Keys and Defaults
 keys_defaults = {
-    'render_mode_radio': "Still Light", 'seed_val_input': 42, 'complexity_slider': 4,
-    'exposure_slider': 1.8, 'glow_slider': 1.0, 'aberration_slider': 0.5, 'line_width_slider': 2.5
+    'render_mode_radio': "Still Light", 'seed_val': 42, 'complexity': 6,
+    'exposure': 1.8, 'glow': 1.2, 'aberration': 2.5, 'line_width': 1.5
 }
 for k, v in keys_defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
 # --- CALLBACKS ---
 def callback_randomize():
-    st.session_state['seed_val_input'] = random.randint(1, 999999)
-    st.session_state['exposure_slider'] = round(random.uniform(1.2, 3.5), 1)
-    st.session_state['glow_slider'] = round(random.uniform(0.6, 1.4), 2)
-    st.session_state['aberration_slider'] = round(random.uniform(0.0, 2.5), 2)
-    st.toast("The lights have shifted! 🔦")
+    st.session_state['seed_val'] = random.randint(1, 999999)
+    st.session_state['exposure'] = round(random.uniform(1.5, 3.0), 1)
+    st.session_state['glow'] = round(random.uniform(0.8, 1.6), 2)
+    st.session_state['aberration'] = round(random.uniform(1.0, 4.0), 2)
+    st.toast("New light gestures discovered! 🔦")
 
 def callback_restore(meta):
     st.session_state['render_mode_radio'] = meta["Mode"]
-    st.session_state['seed_val_input'] = meta["Seed"]
-    st.session_state['exposure_slider'] = meta["Exp"]
-    st.session_state['glow_slider'] = meta["Glow"]
-    st.session_state['aberration_slider'] = meta["Aberr"]
-    st.session_state['line_width_slider'] = meta["Width"]
-    if "Complexity" in meta: st.session_state['complexity_slider'] = meta["Complexity"]
+    st.session_state['seed_val'] = meta["Seed"]
+    st.session_state['exposure'] = meta["Exp"]
+    st.session_state['glow'] = meta["Glow"]
+    st.session_state['aberration'] = meta["Aberr"]
+    st.session_state['line_width'] = meta["Width"]
+    st.session_state['complexity'] = meta["Complexity"]
 
 def reset_app():
     st.session_state.history = []
     st.rerun()
 
-# --- LIGHT BUNDLE ENGINE ---
+# --- PHOTOGRAPHIC LIGHT ENGINE ---
 
-
-
-def generate_light_bundle(t, complexity, seed, prog, bundle_index):
-    np.random.seed(seed + bundle_index)
+def generate_gesture_path(complexity, seed, prog):
+    """Creates organic, non-circular light gestures."""
+    rng = np.random.RandomState(seed)
+    t = np.linspace(0, 1, 1000)
     x, y = np.zeros_like(t), np.zeros_like(t)
-    angle = prog * 2 * np.pi
     
-    # Filaments stray slightly from the core path based on their index
-    variance = np.random.uniform(0.01, 0.05) 
-    
+    # Use multiple frequencies to create a 'wandering' path
     for i in range(1, complexity + 1):
-        amp = np.random.uniform(0.5, 1.5) / (i**0.7)
-        phase = np.random.uniform(0, 2*np.pi)
+        freq = rng.uniform(0.5, 2.5) * i
+        amp = rng.uniform(0.2, 1.0) / (i**0.6)
+        phase = rng.uniform(0, 2*np.pi) + (prog * 2 * np.pi)
         
-        # Subtle frequency shifts create the "stranded" look
-        freq_mod = i + (bundle_index * variance)
+        x += amp * np.cos(freq * t * 2 * np.pi + phase)
+        y += amp * np.sin(freq * t * 1.5 * np.pi + phase * 0.5)
         
-        x += amp * np.cos(freq_mod * t + phase + (np.cos(angle) * (i/complexity)))
-        y += amp * np.sin(freq_mod * t + phase + (np.sin(angle) * (i/complexity)))
     return x, y
 
-def render_frame(complexity, seed, exposure, glow, aberration, line_width, prog):
+def render_light_frame(complexity, seed, exposure, glow, aberration, line_width, prog):
     w, h = 1080, 1080
+    # Canvas uses float32 to handle additive 'overexposure' math
     canvas = np.zeros((h, w, 3), dtype=np.float32)
-    t = np.linspace(0, 2 * np.pi, 4000)
     
-    num_filaments = 18 # Bundle count
+    num_strands = 25  # A bundle of filaments
     
-    for b_idx in range(num_filaments):
-        strand_exposure = exposure * np.random.uniform(0.3, 1.0)
-        strand_width = max(1, int(line_width * np.random.uniform(0.6, 1.4)))
+    for s_idx in range(num_strands):
+        # Slightly vary each strand for a natural look
+        s_seed = seed + (s_idx * 100)
+        s_exposure = exposure * random.uniform(0.4, 1.0)
+        s_width = max(1, int(line_width * random.uniform(0.5, 2.0)))
         
-        # Chromatic Aberration per strand
-        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)] 
-        offsets = [aberration * -2.5, 0, aberration * 2.5]
+        x, y = generate_gesture_path(complexity, s_seed, prog)
+        
+        # Chromatic aberration colors (more natural white core with colored fringes)
+        colors = [
+            (1.0, 0.2, 0.1), # Warm Red
+            (0.1, 1.0, 0.4), # Electric Green
+            (0.1, 0.4, 1.0)  # Deep Blue
+        ]
+        
+        # Prism offsets
+        offsets = [aberration * -1.5, 0, aberration * 1.5]
         
         for color, offset in zip(colors, offsets):
-            x, y = generate_light_bundle(t, complexity, seed, prog, b_idx)
-            pts = np.stack([x * 350 + (w/2) + offset, y * 350 + (h/2)], axis=1).astype(np.int32)
-            cv2.polylines(canvas, [pts], False, np.array(color) * strand_exposure, 
-                          thickness=strand_width, lineType=cv2.LINE_AA)
+            # Scale coordinates to frame
+            pts = np.stack([
+                x * 400 + (w/2) + offset, 
+                y * 400 + (h/2)
+            ], axis=1).astype(np.int32)
+            
+            # Additive blending: canvas += color
+            cv2.polylines(canvas, [pts], False, np.array(color) * s_exposure, 
+                          thickness=s_width, lineType=cv2.LINE_AA)
     
+    # Apply high-end Photographic Glow (Multi-pass Blur)
     if glow > 0:
-        canvas += gaussian_filter(canvas, sigma=glow * 5) * 0.4
-        canvas += gaussian_filter(canvas, sigma=glow * 15) * 0.2
+        canvas += gaussian_filter(canvas, sigma=glow * 3) * 0.5
+        canvas += gaussian_filter(canvas, sigma=glow * 10) * 0.3
     
-    return np.clip(canvas * 255, 0, 255).astype(np.uint8)
+    # Tone mapping: bring HDR float values back to 0-255
+    canvas = np.clip(canvas * 255, 0, 255).astype(np.uint8)
+    return canvas
 
 # --- MAIN PAGE ---
 st.title("🔦 Lights of Time Generator")
 
 with st.expander("📖 Studio Quick Start"):
     st.markdown("""
-    - **Path Complexity:** Controls how many 'competitor' waves battle for the line's shape.
-    - **Exposure:** The core brightness of the light filaments.
-    - **Chromatic Aberration:** Simulates lens distortion by splitting the RGB colors.
-    - **Neon Glow:** Creates the atmospheric light falloff.
+    - **Complexity:** Higher values create more random, chaotic 'gestures'.
+    - **Chromatic Aberration:** Controls the 'prism' split on the edges of light trails.
+    - **Exposure:** Intensity of the core light filaments.
+    - **Neon Glow:** Creates atmospheric falloff.
     """)
 
 preview_placeholder = st.empty()
@@ -132,16 +145,16 @@ with st.sidebar:
     st.header("Studio Controls")
     mode = st.radio("Output Type", ["Still Light", "Animated Loop"], key="render_mode_radio")
     
-    complexity = st.slider("Path Complexity", 2, 12, key="complexity_slider", help="Higher values create more tangled light paths.")
-    seed = st.number_input("Seed", step=1, key="seed_val_input")
+    complexity = st.slider("Gesture Complexity", 2, 12, key="complexity", help="Complexity of the light Source movement.")
+    seed = st.number_input("Seed", step=1, key="seed_val")
     
     with st.expander("Optics Styling", expanded=True):
         st.button("🎲 Surprise Me!", on_click=callback_randomize, use_container_width=True)
         st.divider()
-        exposure = st.slider("Exposure", 0.5, 5.0, key="exposure_slider")
-        glow = st.slider("Neon Glow", 0.0, 3.0, key="glow_slider")
-        aberration = st.slider("Chromatic Aberration", 0.0, 10.0, key="aberration_slider")
-        line_width = st.slider("Line Weight", 1.0, 15.0, key="line_width_slider")
+        exposure = st.slider("Exposure", 0.5, 5.0, key="exposure")
+        glow = st.slider("Neon Glow", 0.0, 3.0, key="glow")
+        aberration = st.slider("Chromatic Aberration", 0.0, 10.0, key="aberration")
+        line_width = st.slider("Core Line Weight", 0.5, 5.0, key="line_width")
 
     st.divider()
     gen_btn = st.button("EXECUTE LIGHT RENDER", type="primary", use_container_width=True)
@@ -153,10 +166,9 @@ if gen_btn:
         st.markdown('<div class="hero-container">', unsafe_allow_html=True)
         if mode == "Still Light":
             with st.spinner("Exposing Film..."):
-                img_array = render_frame(complexity, seed, exposure, glow, aberration, line_width, 0)
+                img_array = render_light_frame(complexity, seed, exposure, glow, aberration, line_width, 0)
                 st.image(img_array, use_container_width=True)
                 
-                # FIX: Convert NumPy array to PNG bytes for the download button
                 is_success, buffer = cv2.imencode(".png", cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
                 data = buffer.tobytes()
                 fmt = "png"
@@ -164,7 +176,7 @@ if gen_btn:
             frames = []
             bar = st.progress(0, text="Capturing Light Trails...")
             for i in range(60):
-                f = render_frame(complexity, seed, exposure, glow, aberration, line_width, i/60)
+                f = render_light_frame(complexity, seed, exposure, glow, aberration, line_width, i/60)
                 frames.append(f)
                 bar.progress((i+1)/60)
             
@@ -179,7 +191,7 @@ if gen_btn:
         st.session_state.history.insert(0, {"data": data, "fmt": fmt, "time": time.strftime("%H:%M:%S"), "meta": meta})
         st.rerun()
 
-# HERO PREVIEW (STATIC)
+# HERO PREVIEW
 elif st.session_state.history:
     latest = st.session_state.history[0]
     with preview_placeholder.container():
@@ -204,7 +216,7 @@ if st.session_state.history:
         with cols[idx % 3]:
             st.image(item['data'], use_container_width=True)
             m = item['meta']
-            st.markdown(f"""<div class="metadata-card">Seed: {m['Seed']} | Exp: {m['Exp']} | Aberr: {m['Aberr']}</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="metadata-card"><b>{m['Mode']}</b> • {item['time']}<br>Seed: {m['Seed']} | Exp: {m['Exp']} | Aberr: {m['Aberr']}</div>""", unsafe_allow_html=True)
             c1, c2, c3 = st.columns(3)
             with c1: st.download_button("💾", item['data'], f"light_{idx}.{item['fmt']}", key=f"dl_{idx}")
             with c2: st.button("🔄", key=f"res_{idx}", on_click=callback_restore, args=(m,))
