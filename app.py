@@ -62,8 +62,9 @@ PALETTES = {
         "clusters": [(0.95, 0.95, 1.0), (0.9, 1.0, 1.0)], 
     },
     "RGB Chaos": {
-        "ribbons": [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)], 
-        "clusters": [(0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 0.0)], 
+        # Pure, saturated primary and secondary colors for maximum vibrancy
+        "ribbons": [(0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0), (1.0, 0.0, 1.0)],
+        "clusters": [(0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 0.0), (1.0, 0.5, 0.0), (0.5, 0.0, 1.0)],
     },
     "Neon Cyber": {
         "ribbons": [(1.0, 0.2, 0.0), (0.8, 0.0, 1.0)], 
@@ -120,15 +121,19 @@ def render_frame(params, prog):
         
         if is_ribbon:
             # === SCATTER RIBBON ===
-            num_bristles = 25
+            num_bristles = 35 # Increased bristle count for denser, more vibrant ribbons
             twist_freq = s_rng.uniform(3.0, 8.0)
             twist_phase = s_rng.uniform(0, 2*np.pi)
             twist = np.abs(np.sin(ct * twist_freq + twist_phase))
             
             base_col = np.array(palette["ribbons"][s_rng.randint(0, len(palette["ribbons"]))]) * params['exposure']
             
+            # Higher intensity multiplier for ribbons for more color saturation
+            ribbon_intensity = 0.7 if params['palette'] == "RGB Chaos" else 0.4
+
             for b in range(num_bristles):
-                scatter_amount = s_rng.normal(0, 0.5) * params['width_scale'] * 12.0
+                # Significantly increased width multiplier for much wider ribbons
+                scatter_amount = s_rng.normal(0, 0.5) * params['width_scale'] * 35.0
                 current_offset = scatter_amount * twist
                 
                 bx = mx + nx * (current_offset * 0.002)
@@ -139,7 +144,7 @@ def render_frame(params, prog):
                 py = by*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
                 
-                cv2.polylines(stroke_layer, [pts], False, base_col * 0.4, thickness=thick, lineType=cv2.LINE_AA)
+                cv2.polylines(stroke_layer, [pts], False, base_col * ribbon_intensity, thickness=thick, lineType=cv2.LINE_AA)
 
         else:
             # === SCATTER CLUSTER ===
@@ -153,13 +158,14 @@ def render_frame(params, prog):
                 py = sy*(h*0.4) + h/2 + off_y
                 pts = np.stack([px, py], axis=1).astype(np.int32)
                 
+                # Keep clusters thin for contrast with wide ribbons
                 thick = 1 if s_rng.rand() > 0.3 else 2
-                cv2.polylines(stroke_layer, [pts], False, base_col * 1.2, thickness=thick, lineType=cv2.LINE_AA)
+                # High intensity for sharp, bright lines
+                cv2.polylines(stroke_layer, [pts], False, base_col * 1.5, thickness=thick, lineType=cv2.LINE_AA)
                 
-                # DRAW TIP (FIXED VARIABLE NAME HERE)
+                # DRAW TIP
                 if params['mode'] == "Animated Loop" and len(pts) > 2:
                     tip_pt = pts[-1:] 
-                    # Fixed: changed 'thickness' to 'thick'
                     cv2.circle(stroke_layer, tuple(tip_pt[0]), thick+2, (1.0, 1.0, 1.0), -1)
 
         layers.append((z_depth, stroke_layer))
